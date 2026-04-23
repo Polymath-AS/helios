@@ -7,6 +7,6 @@
   "scripts": {
     "dev": "pnpm --filter @odin/cache-worker dev",
     "deploy": "pnpm --filter @odin/cache-worker deploy",
-    "check": "pnpm --filter @odin/cache-worker check"
+    "check": "pnpm -r check"
   }
 }
