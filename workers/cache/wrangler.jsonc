@@ -7,10 +7,9 @@
 		"enabled": true
 	},
 	"upload_source_maps": true,
+	"workers_dev": true,
 	"vars": {
-		"SIGNING_KEY_NAME": "odin-cache-1",
-		"AUTH_TOKEN": "",
-		"SIGNING_PRIVATE_KEY": ""
+		"SIGNING_KEY_NAME": "odin-cache-1"
 	},
 	"r2_buckets": [
 		{

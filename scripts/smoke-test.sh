@@ -82,7 +82,7 @@ FILE_SIZE=${#NAR_CONTENT}
 
 # 5a. Create upload session
 echo "  5a. Creating upload session"
-SESSION_HTTP=$(curl -s -w "\n%{http_code}" -X POST "$BASE/_api/v1/caches/$CACHE_NAME/upload-sessions" \
+SESSION_STATUS=$(curl -s -o /tmp/smoke-session.json -w "%{http_code}" -X POST "$BASE/_api/v1/caches/$CACHE_NAME/upload-sessions" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d "{
@@ -95,8 +95,8 @@ SESSION_HTTP=$(curl -s -w "\n%{http_code}" -X POST "$BASE/_api/v1/caches/$CACHE_
     \"compression\": \"none\"
   }")
 
-SESSION_RESP=$(echo "$SESSION_HTTP" | head -1)
-SESSION_STATUS=$(echo "$SESSION_HTTP" | tail -1)
+SESSION_RESP=$(cat /tmp/smoke-session.json)
+rm -f /tmp/smoke-session.json
 SESSION_ID=$(echo "$SESSION_RESP" | grep -o '"sessionId":"[^"]*"' | cut -d'"' -f4)
 R2_KEY=$(echo "$SESSION_RESP" | grep -o '"r2Key":"[^"]*"' | cut -d'"' -f4)
 
@@ -110,7 +110,7 @@ else
   # 5b. Upload blob to R2
   echo "  5b. Uploading blob to R2"
   echo -n "$NAR_CONTENT" > /tmp/smoke-nar.bin
-  wrangler r2 object put "odin-cache/$R2_KEY" --file /tmp/smoke-nar.bin --remote --force \
+  wrangler r2 object put "odin-cache/$R2_KEY" --file /tmp/smoke-nar.bin --remote \
     -c "$WORKER_DIR/wrangler.jsonc" > /dev/null 2>&1
   rm /tmp/smoke-nar.bin
   echo "  ok: blob uploaded"
