@@ -166,6 +166,22 @@ describe("publish", () => {
 		expect(res.status).toBe(409);
 	});
 
+	it("concurrent duplicate publish does not create duplicate paths", async () => {
+		const session = await createSessionAndUpload(uniqueFileHash(), uniqueStorePathHash());
+
+		const [r1, r2] = await Promise.all([
+			post(`/_api/v1/uploads/${session.sessionId}/publish`, {}),
+			post(`/_api/v1/uploads/${session.sessionId}/publish`, {}),
+		]);
+
+		expect(r1.status).toBe(200);
+		expect(r2.status).toBe(200);
+		const b1 = await r1.json<{ published: boolean; alreadyExisted?: boolean }>();
+		const b2 = await r2.json<{ published: boolean; alreadyExisted?: boolean }>();
+		expect(b1.published).toBe(true);
+		expect(b2.published).toBe(true);
+	});
+
 	it("duplicate publish is idempotent", async () => {
 		const session = await createSessionAndUpload(uniqueFileHash(), uniqueStorePathHash());
 

@@ -202,26 +202,41 @@ export async function handlePublish(
 		if (!session.r2UploadKey) {
 			return errorResponse("Session has no R2 upload key", 500);
 		}
-		blob = await createBlobObject(config.db, {
-			fileHash: session.fileHash,
-			fileSize: session.fileSize,
-			compression: session.compression,
-			r2Key: session.r2UploadKey,
-		});
+		try {
+			blob = await createBlobObject(config.db, {
+				fileHash: session.fileHash,
+				fileSize: session.fileSize,
+				compression: session.compression,
+				r2Key: session.r2UploadKey,
+			});
+		} catch {
+			blob = await findBlobObject(config.db, session.fileHash, session.compression);
+			if (!blob) {
+				return errorResponse("Failed to create or find blob object", 500);
+			}
+		}
 	}
 
-	await createPublishedPath(config.db, {
-		cacheId: session.cacheId,
-		storePathHash: session.storePathHash,
-		storePath: session.storePath,
-		narHash: session.narHash,
-		narSize: session.narSize,
-		blobObjectId: blob.id,
-		referencesJson: session.referencesJson,
-		deriver: session.deriver,
-		system: session.system,
-		signaturesJson: "[]",
-	});
+	try {
+		await createPublishedPath(config.db, {
+			cacheId: session.cacheId,
+			storePathHash: session.storePathHash,
+			storePath: session.storePath,
+			narHash: session.narHash,
+			narSize: session.narSize,
+			blobObjectId: blob.id,
+			referencesJson: session.referencesJson,
+			deriver: session.deriver,
+			system: session.system,
+			signaturesJson: "[]",
+		});
+	} catch {
+		const raced = await findPublishedPath(config.db, session.cacheId, session.storePathHash);
+		if (raced) {
+			return jsonResponse({ published: true, storePathHash: session.storePathHash, alreadyExisted: true });
+		}
+		return errorResponse("Failed to publish path", 500);
+	}
 
 	return jsonResponse({ published: true, storePathHash: session.storePathHash });
 }
