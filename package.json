@@ -1,0 +1,12 @@
+{
+  "packageManager": "pnpm@10.33.0",
+  "type": "module",
+  "name": "odin",
+  "private": true,
+  "description": "Cloudflare-native Nix cache workspace",
+  "scripts": {
+    "dev": "pnpm --filter @odin/cache-worker dev",
+    "deploy": "pnpm --filter @odin/cache-worker deploy",
+    "check": "pnpm --filter @odin/cache-worker check"
+  }
+}
