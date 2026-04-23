@@ -1,6 +1,10 @@
 import type { PublishedPath, BlobObject } from "./db/types.js";
 
-export function renderNarinfo(path: PublishedPath, blob: BlobObject): string {
+export function renderNarinfo(
+	path: PublishedPath,
+	blob: BlobObject,
+	signatures: readonly string[] = [],
+): string {
 	const lines: string[] = [
 		`StorePath: ${path.storePath}`,
 		`URL: nar/${blob.fileHash}/${blob.compression}.nar`,
@@ -24,8 +28,9 @@ export function renderNarinfo(path: PublishedPath, blob: BlobObject): string {
 		lines.push(`System: ${path.system}`);
 	}
 
-	const sigs: string[] = JSON.parse(path.signaturesJson);
-	for (const sig of sigs) {
+	const storedSigs: string[] = JSON.parse(path.signaturesJson);
+	const allSigs = [...storedSigs, ...signatures];
+	for (const sig of allSigs) {
 		lines.push(`Sig: ${sig}`);
 	}
 

@@ -1,6 +1,8 @@
 import type { WorkerConfig } from "./config.js";
 import { findCacheByName, findPublishedPath, findBlobObject, findBlobObjectById } from "./db/repository.js";
 import { renderNarinfo } from "./narinfo.js";
+import { verifyAuth } from "./auth.js";
+import { computeFingerprint, signNarinfo } from "./signing.js";
 import { parseCacheName, parseStorePathHash, parseFileHash, parseCompression } from "@odin/cache-domain";
 import {
 	handleCreateSession,
@@ -124,7 +126,10 @@ async function handleNarinfo(
 		return new Response("Not Found", { status: 404 });
 	}
 
-	const body = renderNarinfo(path, blob);
+	const fingerprint = computeFingerprint(path);
+	const sig = await signNarinfo(fingerprint, config.signingKeyName, config.signingPrivateKey);
+	const signatures = sig ? [sig] : [];
+	const body = renderNarinfo(path, blob, signatures);
 
 	if (method === "HEAD") {
 		return new Response(null, {
@@ -180,6 +185,11 @@ async function handleWriteApi(
 	config: WorkerConfig,
 	pathname: string,
 ): Promise<Response> {
+	const authError = verifyAuth(request, config);
+	if (authError) {
+		return authError;
+	}
+
 	if (pathname === "/_api/v1/get-missing-paths") {
 		return handleGetMissingPaths(request, config);
 	}
