@@ -2,6 +2,13 @@ import type { WorkerConfig } from "./config.js";
 import { findCacheByName, findPublishedPath, findBlobObject, findBlobObjectById } from "./db/repository.js";
 import { renderNarinfo } from "./narinfo.js";
 import { parseCacheName, parseStorePathHash, parseFileHash, parseCompression } from "@odin/cache-domain";
+import {
+	handleCreateSession,
+	handleMultipart,
+	handleComplete,
+	handlePublish,
+	handleGetMissingPaths,
+} from "./uploads.js";
 
 export async function handleRequest(
 	request: Request,
@@ -18,6 +25,18 @@ export async function handleRequest(
 		return handleHealthz(config);
 	}
 
+	// Write API routes (POST only)
+	if (url.pathname.startsWith("/_api/v1/")) {
+		if (method !== "POST") {
+			return new Response("Method Not Allowed", {
+				status: 405,
+				headers: { allow: "POST" },
+			});
+		}
+		return handleWriteApi(request, config, url.pathname);
+	}
+
+	// Read paths (GET/HEAD only)
 	if (method !== "GET" && method !== "HEAD") {
 		return new Response("Method Not Allowed", {
 			status: 405,
@@ -154,4 +173,36 @@ async function handleNarDownload(
 			"cache-control": "public, max-age=31536000, immutable",
 		},
 	});
+}
+
+async function handleWriteApi(
+	request: Request,
+	config: WorkerConfig,
+	pathname: string,
+): Promise<Response> {
+	if (pathname === "/_api/v1/get-missing-paths") {
+		return handleGetMissingPaths(request, config);
+	}
+
+	const sessionCreate = pathname.match(/^\/_api\/v1\/caches\/([^/]+)\/upload-sessions$/);
+	if (sessionCreate) {
+		return handleCreateSession(request, config, sessionCreate[1]);
+	}
+
+	const multipart = pathname.match(/^\/_api\/v1\/uploads\/([^/]+)\/multipart$/);
+	if (multipart) {
+		return handleMultipart(config, multipart[1]);
+	}
+
+	const complete = pathname.match(/^\/_api\/v1\/uploads\/([^/]+)\/complete$/);
+	if (complete) {
+		return handleComplete(request, config, complete[1]);
+	}
+
+	const publish = pathname.match(/^\/_api\/v1\/uploads\/([^/]+)\/publish$/);
+	if (publish) {
+		return handlePublish(config, publish[1]);
+	}
+
+	return new Response("Not Found", { status: 404 });
 }
