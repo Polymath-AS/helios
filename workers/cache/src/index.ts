@@ -1,3 +1,5 @@
+import { resolveConfig } from './config.js';
+
 function json(body: Record<string, string | boolean>, status = 200): Response {
 	return new Response(JSON.stringify(body), {
 		status,
@@ -8,7 +10,9 @@ function json(body: Record<string, string | boolean>, status = 200): Response {
 }
 
 export default {
-	async fetch(request): Promise<Response> {
+	async fetch(request, env): Promise<Response> {
+		const config = resolveConfig(env);
+
 		if (request.method !== 'GET') {
 			return new Response('Method Not Allowed', {
 				status: 405,
