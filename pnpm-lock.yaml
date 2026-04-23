@@ -8,6 +8,15 @@ importers:
 
   .: {}
 
+  packages/cache-domain:
+    devDependencies:
+      typescript:
+        specifier: ^5.5.2
+        version: 5.9.3
+      vitest:
+        specifier: ~3.2.0
+        version: 3.2.4(@types/node@25.6.0)
+
   workers/cache:
     devDependencies:
       '@cloudflare/vitest-pool-workers':
