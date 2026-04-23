@@ -7,6 +7,11 @@
 		"enabled": true
 	},
 	"upload_source_maps": true,
+	"vars": {
+		"SIGNING_KEY_NAME": "odin-cache-1",
+		"AUTH_TOKEN": "",
+		"SIGNING_PRIVATE_KEY": ""
+	},
 	"r2_buckets": [
 		{
 			"binding": "CACHE_BUCKET",
@@ -20,5 +25,8 @@
 			"database_id": "00000000-0000-0000-0000-000000000000",
 			"migrations_dir": "migrations"
 		}
-	]
+	],
+	"triggers": {
+		"crons": ["0 */6 * * *"]
+	}
 }

@@ -216,6 +216,39 @@ export async function findUploadParts(
 		.all();
 }
 
+// ── Blob Object Cleanup ──
+
+export async function findUnreferencedBlobObjects(
+	db: DrizzleD1Database,
+): Promise<BlobObject[]> {
+	const referenced = db
+		.select({ id: publishedPaths.blobObjectId })
+		.from(publishedPaths);
+
+	return db
+		.select()
+		.from(blobObjects)
+		.where(notInArray(blobObjects.id, referenced))
+		.all();
+}
+
+export async function deleteBlobObject(
+	db: DrizzleD1Database,
+	id: number,
+): Promise<void> {
+	await db.delete(blobObjects).where(eq(blobObjects.id, id)).run();
+}
+
+// ── Upload Session Cleanup ──
+
+export async function deleteUploadSession(
+	db: DrizzleD1Database,
+	sessionId: string,
+): Promise<void> {
+	await db.delete(uploadParts).where(eq(uploadParts.sessionId, sessionId)).run();
+	await db.delete(uploadSessions).where(eq(uploadSessions.id, sessionId)).run();
+}
+
 // ── GC Marks ──
 
 export async function createGcMark(

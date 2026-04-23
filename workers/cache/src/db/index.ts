@@ -40,4 +40,7 @@ export {
 	createGcMark,
 	findGcMarks,
 	deleteGcMark,
+	findUnreferencedBlobObjects,
+	deleteBlobObject,
+	deleteUploadSession,
 } from './repository.js';
