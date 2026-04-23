@@ -8,7 +8,7 @@ import { describe, it, expect } from "vitest";
 import worker from "../src";
 
 describe("cache worker", () => {
-	it("serves repo metadata on /", async () => {
+	it("serves service info on /", async () => {
 		const request = new Request<unknown, IncomingRequestCfProperties>(
 			"http://example.com/"
 		);
@@ -20,7 +20,7 @@ describe("cache worker", () => {
 		expect(response.status).toBe(200);
 		expect(await response.json()).toEqual({
 			service: "odin-cache",
-			status: "bootstrapped",
+			status: "ok",
 		});
 	});
 
@@ -29,14 +29,23 @@ describe("cache worker", () => {
 		const response = await SELF.fetch(request);
 
 		expect(response.status).toBe(200);
-		expect(await response.json()).toEqual({ ok: true, service: "odin-cache" });
+		const body = await response.json<{ ok: boolean; service: string }>();
+		expect(body.service).toBe("odin-cache");
+		expect(body.ok).toBe(true);
 	});
 
-	it("rejects unsupported methods", async () => {
-		const request = new Request("http://example.com/healthz", { method: "POST" });
+	it("rejects unsupported methods on cache paths", async () => {
+		const request = new Request("http://example.com/mycache/test.narinfo", { method: "POST" });
 		const response = await SELF.fetch(request);
 
 		expect(response.status).toBe(405);
-		expect(response.headers.get("allow")).toBe("GET");
+		expect(response.headers.get("allow")).toBe("GET, HEAD");
+	});
+
+	it("returns 404 for unknown paths", async () => {
+		const request = new Request("http://example.com/nonexistent");
+		const response = await SELF.fetch(request);
+
+		expect(response.status).toBe(404);
 	});
 });

@@ -27,6 +27,7 @@ export {
 	findCacheByName,
 	createCache,
 	findBlobObject,
+	findBlobObjectById,
 	createBlobObject,
 	findPublishedPath,
 	createPublishedPath,

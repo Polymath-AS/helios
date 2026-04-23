@@ -53,6 +53,13 @@ export async function findBlobObject(
 		.get();
 }
 
+export async function findBlobObjectById(
+	db: DrizzleD1Database,
+	id: number,
+): Promise<BlobObject | undefined> {
+	return db.select().from(blobObjects).where(eq(blobObjects.id, id)).get();
+}
+
 export async function createBlobObject(
 	db: DrizzleD1Database,
 	params: {

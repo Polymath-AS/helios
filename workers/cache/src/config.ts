@@ -1,6 +1,9 @@
+import { drizzle } from "drizzle-orm/d1";
+import type { DrizzleD1Database } from "drizzle-orm/d1";
+
 export interface WorkerConfig {
 	readonly bucket: R2Bucket;
-	readonly db: D1Database;
+	readonly db: DrizzleD1Database;
 }
 
 export function resolveConfig(env: Env): WorkerConfig {
@@ -12,6 +15,6 @@ export function resolveConfig(env: Env): WorkerConfig {
 	}
 	return {
 		bucket: env.CACHE_BUCKET,
-		db: env.CACHE_DB,
+		db: drizzle(env.CACHE_DB),
 	};
 }
