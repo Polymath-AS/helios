@@ -1,0 +1,42 @@
+export {
+	caches,
+	blobObjects,
+	publishedPaths,
+	uploadSessions,
+	uploadParts,
+	gcMarks,
+} from './schema.js';
+
+export type {
+	Cache,
+	NewCache,
+	BlobObject,
+	NewBlobObject,
+	PublishedPath,
+	NewPublishedPath,
+	UploadSession,
+	NewUploadSession,
+	UploadPart,
+	NewUploadPart,
+	GcMark,
+	NewGcMark,
+	UploadSessionStatus,
+} from './types.js';
+
+export {
+	findCacheByName,
+	createCache,
+	findBlobObject,
+	createBlobObject,
+	findPublishedPath,
+	createPublishedPath,
+	findUploadSession,
+	createUploadSession,
+	updateUploadSessionStatus,
+	findExpiredSessions,
+	createUploadPart,
+	findUploadParts,
+	createGcMark,
+	findGcMarks,
+	deleteGcMark,
+} from './repository.js';

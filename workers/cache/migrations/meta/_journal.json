@@ -1,0 +1,13 @@
+{
+  "version": "7",
+  "dialect": "sqlite",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "6",
+      "when": 1776949256837,
+      "tag": "0000_cultured_night_nurse",
+      "breakpoints": true
+    }
+  ]
+}
