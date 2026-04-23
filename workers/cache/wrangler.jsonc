@@ -17,7 +17,8 @@
 		{
 			"binding": "CACHE_DB",
 			"database_name": "odin-cache",
-			"database_id": "00000000-0000-0000-0000-000000000000"
+			"database_id": "00000000-0000-0000-0000-000000000000",
+			"migrations_dir": "migrations"
 		}
 	]
 }
