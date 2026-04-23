@@ -39,13 +39,13 @@ STATUS=$(curl -s -o /dev/null -w "%{http_code}" "$BASE/healthz")
 check "/healthz returns 200" "200" "$STATUS"
 
 BODY=$(curl -s "$BASE/healthz")
-check "/healthz has ok=true" "true" "$(echo "$BODY" | grep -o '"ok":true' | head -1 | grep -o 'true')"
+check "/healthz has ok=true" "true" "$(echo "$BODY" | grep -o '"ok" *: *true' | head -1 | grep -o 'true')"
 echo
 
 # ── 2. Seed a cache via D1 ──
 echo "2. Seeding test cache via D1"
 CACHE_NAME="smoke-$(date +%s)"
-wrangler d1 execute odin-cache --remote \
+wrangler d1 execute odin-cache --remote --yes \
   --command "INSERT OR IGNORE INTO caches (name, is_public) VALUES ('$CACHE_NAME', 1)" \
   > /dev/null 2>&1
 echo "  created cache: $CACHE_NAME"
@@ -77,7 +77,7 @@ FILE_SIZE=${#NAR_CONTENT}
 
 # 5a. Create upload session
 echo "  5a. Creating upload session"
-SESSION_RESP=$(curl -s -X POST "$BASE/_api/v1/caches/$CACHE_NAME/upload-sessions" \
+SESSION_HTTP=$(curl -s -w "\n%{http_code}" -X POST "$BASE/_api/v1/caches/$CACHE_NAME/upload-sessions" \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
   -d "{
@@ -90,20 +90,22 @@ SESSION_RESP=$(curl -s -X POST "$BASE/_api/v1/caches/$CACHE_NAME/upload-sessions
     \"compression\": \"none\"
   }")
 
+SESSION_RESP=$(echo "$SESSION_HTTP" | head -1)
+SESSION_STATUS=$(echo "$SESSION_HTTP" | tail -1)
 SESSION_ID=$(echo "$SESSION_RESP" | grep -o '"sessionId":"[^"]*"' | cut -d'"' -f4)
 R2_KEY=$(echo "$SESSION_RESP" | grep -o '"r2Key":"[^"]*"' | cut -d'"' -f4)
 
 if [ -z "$SESSION_ID" ]; then
-  echo "  FAIL: could not create session: $SESSION_RESP"
+  echo "  FAIL: could not create session (status=$SESSION_STATUS): $SESSION_RESP"
   FAIL=$((FAIL + 1))
 else
-  check "session created" "201" "$(echo "$SESSION_RESP" | grep -o '"sessionId"' | head -1 | sed 's/"sessionId"/201/')"
+  check "session created (201)" "201" "$SESSION_STATUS"
   echo "  session=$SESSION_ID r2Key=$R2_KEY"
 
   # 5b. Upload blob to R2
   echo "  5b. Uploading blob to R2"
   echo -n "$NAR_CONTENT" > /tmp/smoke-nar.bin
-  wrangler r2 object put "odin-cache/$R2_KEY" --file /tmp/smoke-nar.bin --remote > /dev/null 2>&1
+  wrangler r2 object put "odin-cache/$R2_KEY" --file /tmp/smoke-nar.bin --remote --force > /dev/null 2>&1
   rm /tmp/smoke-nar.bin
   echo "  ok: blob uploaded"
 
