@@ -16,6 +16,10 @@ TOKEN="${2:?usage: smoke-test.sh <base-url> <auth-token>}"
 # Strip trailing slash
 BASE="${BASE%/}"
 
+# Resolve the worker directory for wrangler commands
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+WORKER_DIR="$(cd "$SCRIPT_DIR/../workers/cache" && pwd)"
+
 PASS=0
 FAIL=0
 
@@ -46,6 +50,7 @@ echo
 echo "2. Seeding test cache via D1"
 CACHE_NAME="smoke-$(date +%s)"
 wrangler d1 execute odin-cache --remote --yes \
+  -c "$WORKER_DIR/wrangler.jsonc" \
   --command "INSERT OR IGNORE INTO caches (name, is_public) VALUES ('$CACHE_NAME', 1)" \
   > /dev/null 2>&1
 echo "  created cache: $CACHE_NAME"
@@ -105,7 +110,8 @@ else
   # 5b. Upload blob to R2
   echo "  5b. Uploading blob to R2"
   echo -n "$NAR_CONTENT" > /tmp/smoke-nar.bin
-  wrangler r2 object put "odin-cache/$R2_KEY" --file /tmp/smoke-nar.bin --remote --force > /dev/null 2>&1
+  wrangler r2 object put "odin-cache/$R2_KEY" --file /tmp/smoke-nar.bin --remote --force \
+    -c "$WORKER_DIR/wrangler.jsonc" > /dev/null 2>&1
   rm /tmp/smoke-nar.bin
   echo "  ok: blob uploaded"
 
