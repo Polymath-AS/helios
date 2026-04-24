@@ -1,7 +1,7 @@
 {
 	"$schema": "node_modules/wrangler/config-schema.json",
 	"name": "helios-cache",
-	"main": "src/index.ts",
+	"main": "workers/cache/src/index.ts",
 	"compatibility_date": "2026-03-10",
 	"observability": {
 		"enabled": true
@@ -22,7 +22,7 @@
 			"binding": "CACHE_DB",
 			"database_name": "helios-cache",
 			"database_id": "",
-			"migrations_dir": "migrations"
+			"migrations_dir": "workers/cache/migrations"
 		}
 	],
 	"triggers": {
