@@ -377,7 +377,8 @@ export async function createApiToken(
 		readonly subject: string;
 		readonly cachesJson: string;
 		readonly permsJson: string;
-		readonly expiresAt: string;
+		// `null` means the token never expires.
+		readonly expiresAt: string | null;
 		readonly createdBy: string;
 	},
 ): Promise<ApiToken> {

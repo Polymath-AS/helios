@@ -28,7 +28,8 @@ export async function handleCreateToken(
 		subject: string;
 		caches: string[];
 		perms: string[];
-		expiresInDays?: number;
+		// `null` requests a non-expiring token; omitted falls back to the default lifetime.
+		expiresInDays?: number | null;
 	}>(request);
 	if (body instanceof Response) return body;
 
@@ -66,9 +67,11 @@ export async function handleCreateToken(
 		validatedPerms.push(p);
 	}
 
-	const expiresInDays = body.expiresInDays ?? DEFAULT_TOKEN_LIFETIME_DAYS;
-	if (!Number.isFinite(expiresInDays) || !Number.isInteger(expiresInDays) || expiresInDays < 1 || expiresInDays > MAX_TOKEN_LIFETIME_DAYS) {
-		return errorResponse(`expiresInDays must be between 1 and ${MAX_TOKEN_LIFETIME_DAYS}`, 400);
+	// `null` opts in to a non-expiring token; an omitted field still defaults to a
+	// finite lifetime to avoid accidental forever-tokens.
+	const expiresInDays = body.expiresInDays === undefined ? DEFAULT_TOKEN_LIFETIME_DAYS : body.expiresInDays;
+	if (expiresInDays !== null && (!Number.isFinite(expiresInDays) || !Number.isInteger(expiresInDays) || expiresInDays < 1 || expiresInDays > MAX_TOKEN_LIFETIME_DAYS)) {
+		return errorResponse(`expiresInDays must be between 1 and ${MAX_TOKEN_LIFETIME_DAYS}, or null for no expiry`, 400);
 	}
 
 	const dedupedCaches = [...new Set(body.caches)];
@@ -76,7 +79,7 @@ export async function handleCreateToken(
 
 	const now = Date.now() / 1000;
 	const jti = crypto.randomUUID();
-	const exp = now + expiresInDays * 86400;
+	const exp = expiresInDays === null ? undefined : Math.floor(now + expiresInDays * 86400);
 
 	const claims: TokenClaims = {
 		jti,
@@ -86,12 +89,12 @@ export async function handleCreateToken(
 		caches: dedupedCaches,
 		perms: dedupedPerms,
 		iat: Math.floor(now),
-		exp: Math.floor(exp),
+		exp,
 	};
 
 	const token = await signJwt(claims, config.jwtSecret);
 
-	const expiresAt = new Date(exp * 1000).toISOString();
+	const expiresAt = exp === undefined ? null : new Date(exp * 1000).toISOString();
 
 	await createApiToken(config.db, {
 		jti,

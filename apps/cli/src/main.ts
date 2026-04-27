@@ -23,13 +23,14 @@ Options:
 Token create options:
   --caches <names>   Comma-separated cache names or "*" (default: *)
   --perms <perms>    Comma-separated permissions (default: push)
-  --expires <days>   Token lifetime in days (default: 90)
+  --expires <days>   Token lifetime in days, or "never" for no expiry (default: 90)
 
 Examples:
   helios login prod https://cache.example.com my-admin-secret
   helios push main /nix/store/abc...-hello
   helios push main --closure /run/current-system
   helios token create ci-runner --caches main --perms push --expires 90
+  helios token create bot --caches main --perms push --expires never
   helios token list
   helios token revoke a1b2c3d4-... "employee offboarded"
 `;
@@ -155,13 +156,19 @@ async function main(): Promise<void> {
         permsStr = args[permsIdx + 1];
       }
 
-      let expiresInDays: number | undefined;
+      // undefined: server default. null: never expires. number: lifetime in days.
+      let expiresInDays: number | null | undefined;
       const expiresIdx = args.indexOf("--expires");
       if (expiresIdx !== -1 && expiresIdx + 1 < args.length) {
-        expiresInDays = parseInt(args[expiresIdx + 1], 10);
-        if (!Number.isInteger(expiresInDays) || expiresInDays < 1) {
-          console.error("--expires must be a positive integer");
-          process.exit(1);
+        const value = args[expiresIdx + 1];
+        if (value === "never") {
+          expiresInDays = null;
+        } else {
+          expiresInDays = parseInt(value, 10);
+          if (!Number.isInteger(expiresInDays) || expiresInDays < 1) {
+            console.error("--expires must be a positive integer or \"never\"");
+            process.exit(1);
+          }
         }
       }
 
@@ -173,7 +180,7 @@ async function main(): Promise<void> {
       console.log(`  JTI:     ${result.jti}`);
       console.log(`  Caches:  ${result.caches.join(", ")}`);
       console.log(`  Perms:   ${result.perms.join(", ")}`);
-      console.log(`  Expires: ${result.expiresAt}`);
+      console.log(`  Expires: ${result.expiresAt ?? "never"}`);
       console.log("");
       console.log(result.token);
       return;
@@ -187,7 +194,7 @@ async function main(): Promise<void> {
       }
       for (const t of tokens) {
         const status = t.revokedAt ? `revoked (${t.revokedAt})` : "active";
-        console.log(`${t.jti}  ${t.subject}  [${t.perms.join(",")}]  caches=[${t.caches.join(",")}]  ${status}  expires=${t.expiresAt}`);
+        console.log(`${t.jti}  ${t.subject}  [${t.perms.join(",")}]  caches=[${t.caches.join(",")}]  ${status}  expires=${t.expiresAt ?? "never"}`);
       }
       return;
     }
