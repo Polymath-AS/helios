@@ -7,7 +7,8 @@ export type TokenClaims = {
 	readonly aud: string;
 	readonly caches: readonly string[];
 	readonly perms: readonly TokenPermission[];
-	readonly exp: number;
+	// Absent when the token is configured to never expire.
+	readonly exp?: number;
 	readonly iat: number;
 };
 
@@ -87,13 +88,14 @@ function validateClaims(obj: Record<string, unknown>): JwtVerifyResult {
 		return { kind: "error", reason: "invalid token" };
 	}
 
+	// `exp` is optional: tokens minted with no expiry omit the claim entirely.
 	const exp = obj["exp"];
-	if (typeof exp !== "number") {
+	if (exp !== undefined && (typeof exp !== "number" || !Number.isSafeInteger(exp))) {
 		return { kind: "error", reason: "invalid token" };
 	}
 
 	const iat = obj["iat"];
-	if (typeof iat !== "number") {
+	if (typeof iat !== "number" || !Number.isSafeInteger(iat)) {
 		return { kind: "error", reason: "invalid token" };
 	}
 
@@ -107,17 +109,13 @@ function validateClaims(obj: Record<string, unknown>): JwtVerifyResult {
 		return { kind: "error", reason: "invalid token" };
 	}
 
-	if (!Number.isSafeInteger(exp) || !Number.isSafeInteger(iat)) {
-		return { kind: "error", reason: "invalid token" };
-	}
-
 	// Reject tokens issued in the future, allowing a small clock skew between nodes.
 	const now = Date.now() / 1000;
 	if (iat > now + MAX_CLOCK_SKEW_SECONDS) {
 		return { kind: "error", reason: "invalid token" };
 	}
 
-	if (exp <= iat) {
+	if (exp !== undefined && exp <= iat) {
 		return { kind: "error", reason: "invalid token" };
 	}
 

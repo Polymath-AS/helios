@@ -88,7 +88,8 @@ export const apiTokens = sqliteTable("api_tokens", {
 	cachesJson: text("caches_json").notNull(),
 	permsJson: text("perms_json").notNull(),
 	createdAt: timestamp("created_at"),
-	expiresAt: text("expires_at").notNull(),
+	// Nullable: when null, the token never expires.
+	expiresAt: text("expires_at"),
 	createdBy: text("created_by").notNull(),
 	revokedAt: text("revoked_at"),
 	revokedBy: text("revoked_by"),

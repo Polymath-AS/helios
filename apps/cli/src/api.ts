@@ -220,7 +220,7 @@ export interface TokenInfo {
   readonly caches: string[];
   readonly perms: string[];
   readonly createdAt: string;
-  readonly expiresAt: string;
+  readonly expiresAt: string | null;
   readonly createdBy: string;
   readonly revokedAt: string | null;
   readonly revokedBy: string | null;
@@ -233,7 +233,7 @@ export interface CreateTokenResponse {
   readonly subject: string;
   readonly caches: string[];
   readonly perms: string[];
-  readonly expiresAt: string;
+  readonly expiresAt: string | null;
 }
 
 export async function createToken(
@@ -242,7 +242,8 @@ export async function createToken(
     subject: string;
     caches: string[];
     perms: string[];
-    expiresInDays?: number;
+    // `null` requests a non-expiring token.
+    expiresInDays?: number | null;
   },
 ): Promise<CreateTokenResponse> {
   const resp = await request(client, "POST", "/_api/v1/admin/tokens", params);
