@@ -129,6 +129,23 @@ in
       description = "Bearer secret for the admin API (at least 16 bytes). Without it the admin API is disabled.";
     };
 
+    caches = mkOption {
+      type = types.attrsOf (types.submodule {
+        options.public = mkOption {
+          type = types.bool;
+          default = true;
+          description = "Whether anyone may read the cache; a private cache needs a token with pull.";
+        };
+      });
+      default = { };
+      example = { main = { }; team.public = false; };
+      description = ''
+        Caches to create at startup. A declared cache that already exists takes
+        the declared visibility. Removing a cache from here does not delete it
+        or its paths.
+      '';
+    };
+
     logLevel = mkOption {
       type = types.str;
       default = "info";
@@ -310,6 +327,9 @@ in
         HELIOS_MAX_UPLOAD_BYTES = toString cfg.settings.maxUploadBytes;
         HELIOS_GC_INTERVAL_HOURS = toString cfg.settings.gcIntervalHours;
         HELIOS_AUDIT_RETENTION_DAYS = toString cfg.settings.auditRetentionDays;
+      }
+      // lib.optionalAttrs (cfg.caches != { }) {
+        HELIOS_CACHES = lib.concatStringsSep "," (lib.mapAttrsToList (name: c: if c.public then name else "${name}:private") cfg.caches);
       }
       // lib.optionalAttrs cfg.daemon.enable {
         HELIOS_ADMIN_SOCKET = adminSocket;

@@ -18,7 +18,7 @@ const DEFAULT_TOKEN_LIFETIME_DAYS: i64 = 90;
 const MAX_SUBJECT_LEN: usize = 256;
 const MAX_REASON_LEN: usize = 512;
 
-fn valid_cache_name(name: &str) -> bool {
+pub(crate) fn valid_cache_name(name: &str) -> bool {
     let b = name.as_bytes();
     (1..=64).contains(&b.len())
         && b.iter().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == b'-')

@@ -94,6 +94,11 @@ pub async fn build_state(args: &Args) -> anyhow::Result<Shared> {
     let (audit_tx, audit_rx) = tokio::sync::mpsc::unbounded_channel();
     tokio::spawn(audit::run(db.clone(), audit_rx));
     let st = Arc::new(AppState::load(cfg, db, signer, audit_tx)?);
+    for c in &args.caches {
+        if let Some(change) = st.declare_cache(&c.name, c.public)? {
+            tracing::info!(cache = c.name, public = c.public, "declared cache {change}");
+        }
+    }
     tokio::spawn(gc::run_forever(st.clone()));
     tokio::spawn(gc::run_access_flush(st.clone()));
     Ok(st)

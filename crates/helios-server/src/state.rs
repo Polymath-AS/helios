@@ -148,6 +148,22 @@ impl AppState {
         self.cfg.data_dir.join("tmp")
     }
 
+    /// Creates `name`, or gives an existing cache the visibility `public`.
+    /// Returns what changed, if anything.
+    pub fn declare_cache(&self, name: &str, public: bool) -> rusqlite::Result<Option<&'static str>> {
+        if self.insert_cache(name, public)?.is_some() {
+            return Ok(Some("created"));
+        }
+        if self.cache(name).is_some_and(|c| c.public == public) {
+            return Ok(None);
+        }
+        self.db.write(|conn| conn.execute("UPDATE caches SET is_public = ?2 WHERE name = ?1", params![name, public]))?;
+        if let Some(c) = self.caches.wr().get_mut(name) {
+            c.public = public;
+        }
+        Ok(Some(if public { "made public" } else { "made private" }))
+    }
+
     pub fn insert_cache(&self, name: &str, public: bool) -> rusqlite::Result<Option<CacheInfo>> {
         let id = self.db.write(|conn| -> rusqlite::Result<Option<u32>> {
             conn.execute(
@@ -180,5 +196,42 @@ impl<T> Locked<T> for RwLock<T> {
     }
     fn wr(&self) -> RwLockWriteGuard<'_, T> {
         self.write().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn declared_caches_are_created_and_take_the_declared_visibility() {
+        let dir = std::env::temp_dir().join(format!("helios-state-test-{}", helios_core::uuid_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cfg = Config {
+            data_dir: dir.clone(),
+            jwt_secret: None,
+            admin_secret: None,
+            accel_redirect: None,
+            trust_proxy: false,
+            narinfo_cache_entries: 16,
+            max_upload_bytes: 1 << 20,
+            upload_grace: std::time::Duration::from_secs(1),
+            gc_interval: std::time::Duration::from_secs(3600),
+            audit_retention: std::time::Duration::from_secs(3600),
+        };
+        let db = Db::open(&dir.join("helios.db")).unwrap();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let st = AppState::load(cfg.clone(), db, None, tx).unwrap();
+
+        assert_eq!(st.declare_cache("team", false).unwrap(), Some("created"));
+        assert_eq!(st.declare_cache("team", false).unwrap(), None);
+        assert_eq!(st.declare_cache("team", true).unwrap(), Some("made public"));
+        assert!(st.cache("team").unwrap().public);
+
+        // The change is in the database, not only in memory.
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let reloaded = AppState::load(cfg, Db::open(&dir.join("helios.db")).unwrap(), None, tx).unwrap();
+        assert!(reloaded.cache("team").unwrap().public);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -35,6 +35,7 @@ Every flag can also be set through its environment variable.
 | `--audit-retention-days` | `HELIOS_AUDIT_RETENTION_DAYS` | `30` |
 | `--upload-grace-seconds` | `HELIOS_UPLOAD_GRACE_SECONDS` | `3600`: an unpublished upload is kept this long |
 | `--admin-socket` | `HELIOS_ADMIN_SOCKET` | unset: no maintenance API (see helios-daemon) |
+| `--caches` | `HELIOS_CACHES` | unset: caches to create at startup, such as `main,team:private`; a listed cache that exists takes the listed visibility, and unlisted caches are left alone |
 
 Secret files must hold at least 16 bytes.
 
@@ -92,6 +93,18 @@ TLS from Let's Encrypt and zero-copy NAR downloads:
 }
 ```
 
+Caches can be declared instead of created by hand:
+
+```nix
+services.helios.caches = {
+  main = { };
+  team.public = false;   # reads need a token with pull
+};
+```
+
+A declared cache that exists takes the declared visibility. Removing one from
+the list leaves it and its paths in place; there is no declarative delete.
+
 Secret files are handed to the service as systemd credentials, so they can
 be root-only and come from any secret manager (agenix, sops-nix, or files
 placed by hand). Without `domain`, the module runs only the server on
@@ -106,6 +119,7 @@ placed by hand). Without `domain`, the module runs only the server on
 | `openFirewall` | on with nginx | opens 80 and 443 |
 | `logLevel` | `info` | |
 | `settings.*` | | `narinfoCacheEntries`, `maxUploadBytes`, `gcIntervalHours`, `auditRetentionDays` |
+| `caches.<name>.public` | `true` | caches created at startup; see below |
 
 `services.helios.daemon` (on by default) runs helios-daemon beside the
 server; see [Maintenance](#maintenance). To keep the cache under a size:
@@ -161,7 +175,8 @@ instead, for example as Docker secrets, set all three of
 
 Both binaries take their flags as `HELIOS_*` environment variables (see
 `helios-server --help` and `helios-daemon --help`), such as `HELIOS_QUOTA`,
-`HELIOS_MIN_FREE`, `HELIOS_METRICS_LISTEN`, `HELIOS_LOG` and
+`HELIOS_CACHES=main,team:private`, `HELIOS_MIN_FREE`, `HELIOS_METRICS_LISTEN`,
+`HELIOS_LOG` and
 `HELIOS_LOG_FORMAT=json` (see [Logging](#logging)). Set
 `HELIOS_DAEMON=0` to run the server alone. `docker stop` shuts both down
 cleanly; if either exits on its own, the container exits non-zero so the

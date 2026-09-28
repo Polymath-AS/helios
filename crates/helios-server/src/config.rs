@@ -67,9 +67,34 @@ pub struct Args {
     #[arg(long, env = "HELIOS_ADMIN_SOCKET")]
     pub admin_socket: Option<PathBuf>,
 
+    /// Caches to create at startup, comma-separated: `name` for a public
+    /// cache, `name:private` for a private one. A listed cache that exists
+    /// takes the listed visibility; unlisted caches are left alone.
+    #[arg(long, env = "HELIOS_CACHES", value_delimiter = ',', value_parser = parse_declared_cache)]
+    pub caches: Vec<DeclaredCache>,
+
     /// Print the public key for `trusted-public-keys` and exit.
     #[arg(long)]
     pub print_public_key: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct DeclaredCache {
+    pub name: String,
+    pub public: bool,
+}
+
+fn parse_declared_cache(s: &str) -> Result<DeclaredCache, String> {
+    let (name, public) = match s.trim().split_once(':') {
+        None => (s.trim(), true),
+        Some((name, "public")) => (name, true),
+        Some((name, "private")) => (name, false),
+        Some((_, other)) => return Err(format!("unknown visibility {other:?}; expected public or private")),
+    };
+    if !crate::admin::valid_cache_name(name) {
+        return Err(format!("invalid cache name {name:?}: 1-64 of a-z, 0-9 and -, not starting or ending with -"));
+    }
+    Ok(DeclaredCache { name: name.to_owned(), public })
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -121,5 +146,21 @@ impl Config {
             gc_interval: Duration::from_secs(args.gc_interval_hours.max(1) * 3600),
             audit_retention: Duration::from_secs(args.audit_retention_days * 86400),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_declared_cache;
+
+    #[test]
+    fn declared_caches() {
+        let c = parse_declared_cache("main").unwrap();
+        assert_eq!((c.name.as_str(), c.public), ("main", true));
+        assert!(!parse_declared_cache("team:private").unwrap().public);
+        assert!(parse_declared_cache("team:public").unwrap().public);
+        assert!(parse_declared_cache("team:secret").is_err());
+        assert!(parse_declared_cache("Bad_Name").is_err());
+        assert!(parse_declared_cache("").is_err());
     }
 }

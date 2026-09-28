@@ -20,6 +20,10 @@ pkgs.testers.runNixOSTest {
         domain = "server";
         # A custom location exercises the tmpfiles and sandbox path handling.
         dataDir = "/srv/helios";
+        caches = {
+          main = { };
+          team.public = false;
+        };
         nginx.acme = false;
         signingKeyFile = "/etc/helios/signing-key";
         jwtSecretFile = "/etc/helios/jwt-secret";
@@ -120,7 +124,8 @@ pkgs.testers.runNixOSTest {
 
     with subtest("admin and push"):
         client.succeed(f"helios login admin http://server {admin}")
-        client.succeed("helios cache create main")
+        caches = {c["name"]: c["public"] for c in json.loads(client.succeed("helios cache list"))["caches"]}
+        assert caches == {"main": True, "team": False}, caches
         token = json.loads(client.succeed("helios token create ci --caches main --perms push,pull 2>/dev/null"))["token"]
         client.succeed(f"helios login ci http://server {token}")
         client.succeed("helios push main --closure ${pkgs.hello}")
