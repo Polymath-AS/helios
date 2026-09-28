@@ -10,6 +10,7 @@ A self-hosted Nix binary cache: Rust server and CLI over a Zig core.
   by `crates/helios-core/build.rs`. `core/include/helios.h` is the contract.
 - `crates/helios-core`: safe Rust bindings to libhelios.
 - `crates/helios-server`, `crates/helios-cli`: the binaries.
+- `nix/`: the NixOS module (`services.helios`) and its VM test.
 - `bench/`: comparisons against Cachix's libraries and Nix C++. Not part of
   the Cargo workspace.
 
@@ -48,6 +49,8 @@ hmac/sha2 (libhelios provides SHA-256, HMAC and randomness) and mimalloc
 
 - `cargo test --release`
 - `./scripts/test-zig.sh`
+- `nix build .#checks.x86_64-linux.nixos` after changing `nix/`: a VM test of
+  the NixOS module.
 - `./scripts/e2e.sh` before finishing changes to the server, the CLI or wire
   formats; it substitutes a real closure through Nix with signatures
   required.

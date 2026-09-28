@@ -39,9 +39,63 @@ carry journald priorities.
 The server links the system SQLite; build with `--features bundled-sqlite`
 to compile SQLite in instead.
 
+## NixOS
+
+The flake exports `nixosModules.default`. It runs the server as a hardened
+systemd service and, when `domain` is set, puts nginx in front of it with
+TLS from Let's Encrypt and zero-copy NAR downloads:
+
+```nix
+# flake.nix
+{
+  inputs.helios.url = "github:Polymath-AS/helios";
+  outputs = { nixpkgs, helios, ... }: {
+    nixosConfigurations.cache = nixpkgs.lib.nixosSystem {
+      system = "x86_64-linux";
+      modules = [ helios.nixosModules.default ./configuration.nix ];
+    };
+  };
+}
+```
+
+```nix
+# configuration.nix
+{
+  services.helios = {
+    enable = true;
+    domain = "cache.example.com";
+    signingKeyFile = "/run/secrets/helios-signing-key";
+    jwtSecretFile = "/run/secrets/helios-jwt-secret";
+    adminSecretFile = "/run/secrets/helios-admin-secret";
+  };
+  security.acme = {
+    acceptTerms = true;
+    defaults.email = "ops@example.com";
+  };
+}
+```
+
+Secret files are handed to the service as systemd credentials, so they can
+be root-only and come from any secret manager (agenix, sops-nix, or files
+placed by hand). Without `domain`, the module runs only the server on
+`listen`, for use behind another proxy or on a private network.
+
+| Option | Default | |
+|--------|---------|--|
+| `listen` | `127.0.0.1:8080` | keep on loopback behind nginx |
+| `dataDir` | `/var/lib/helios` | any other path, such as a mounted disk, is created and allowed in the sandbox |
+| `domain` | `null` | enables nginx for this host name |
+| `nginx.acme` | `true` | set `false` for plain HTTP or your own certificates |
+| `openFirewall` | on with nginx | opens 80 and 443 |
+| `logLevel` | `info` | |
+| `settings.*` | | `narinfoCacheEntries`, `maxUploadBytes`, `gcIntervalHours`, `auditRetentionDays` |
+
+`overlays.default` adds `pkgs.helios`. `nix flake check` runs a VM test that
+pushes a closure through the module and substitutes it back.
+
 ## Reverse proxy and zero-copy downloads
 
-Terminate TLS in a reverse proxy. With `--accel-redirect /_nar`, the server
+Outside NixOS, terminate TLS in a reverse proxy. With `--accel-redirect /_nar`, the server
 answers NAR requests with an `X-Accel-Redirect` header after the access
 check, and nginx serves the file with `sendfile`:
 

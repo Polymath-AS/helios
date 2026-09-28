@@ -62,8 +62,10 @@ nix.settings = {
 };
 ```
 
-See [docs.md](docs.md) for configuration, private caches, the HTTP API
-and deployment behind a reverse proxy.
+On NixOS, use the flake's `nixosModules.default` (`services.helios`).
+
+See [docs.md](docs.md) for the NixOS module, configuration, private caches,
+the HTTP API and deployment behind a reverse proxy.
 
 ## License
 
