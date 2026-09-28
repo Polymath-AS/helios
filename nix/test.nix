@@ -75,12 +75,32 @@ pkgs.testers.runNixOSTest {
           args = [ "-c" "echo built > $out" ];
         }
       '';
-      nix.settings.experimental-features = [ "nix-command" ];
+      # Content-addressed derivations, whose outputs Nix finds through build
+      # traces. `top` depends on `dep`, so both traces are needed.
+      environment.etc."ca.nix".text = ''
+        let
+          sh = "''${builtins.storePath "${pkgs.busybox}"}/bin/sh";
+          ca = name: script: derivation {
+            inherit name;
+            system = "${system}";
+            builder = sh;
+            args = [ "-c" script ];
+            __contentAddressed = true;
+            outputHashMode = "recursive";
+            outputHashAlgo = "sha256";
+          };
+        in rec {
+          dep = ca "ca-dep" "echo dep > $out";
+          top = ca "ca-top" "echo top ''${dep} > $out";
+        }
+      '';
+      nix.settings.experimental-features = [ "nix-command" "ca-derivations" ];
       virtualisation.memorySize = 2048;
     };
 
   testScript = ''
     import json
+    import re
 
     start_all()
 
@@ -167,6 +187,19 @@ pkgs.testers.runNixOSTest {
         client.succeed(f"echo {token} > /etc/helios-push-token", "systemctl start helios-watch-store")
         built = client.succeed("nix-build /etc/watched.nix --no-out-link").strip()
         client.wait_until_succeeds(f"curl -sf {narinfo_url(built)}", timeout=60)
+
+    with subtest("content-addressed derivations substitute through build traces"):
+        top = client.succeed("nix-build /etc/ca.nix -A top --no-out-link").strip()
+        out = client.succeed(f"helios push main --closure {top} 2>&1")
+        assert re.search(r"published [1-9][0-9]* build traces", out), out
+        # A fresh store may build nothing, so both outputs have to be found
+        # through the signed traces.
+        client.succeed("nix copy --no-check-sigs --to /tmp/ca-store ${pkgs.busybox}")
+        substituted = client.succeed(
+            "nix-build --store /tmp/ca-store /etc/ca.nix -A top --no-out-link --max-jobs 0 "
+            f"--option substituters http://server/main --option trusted-public-keys '{pubkey}' --option require-sigs true"
+        ).strip()
+        assert substituted == top, (substituted, top)
 
     with subtest("auto-gc evicts least recently used paths, except pinned closures"):
         # The scrub unpublished glibc; a re-push restores the whole closure,

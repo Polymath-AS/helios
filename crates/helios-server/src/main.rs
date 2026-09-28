@@ -12,6 +12,7 @@ mod push;
 mod read;
 mod state;
 mod stats;
+mod traces;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -40,6 +41,7 @@ pub fn router(st: Shared) -> Router {
         .route("/caches/{cache}/missing", post(push::missing))
         .route("/caches/{cache}/nars/known", post(push::known))
         .route("/caches/{cache}/nar", put(push::upload).layer(DefaultBodyLimit::disable()))
+        .route("/caches/{cache}/build-traces", post(traces::publish))
         .route("/caches/{cache}/pins", get(pins::list).post(pins::add))
         .route("/caches/{cache}/pins/{path}", axum::routing::delete(pins::remove))
         .route("/caches/{cache}/uploads", post(chunked::create))

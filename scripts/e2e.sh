@@ -158,6 +158,22 @@ check "invalid pin rejected" 400 "$(status -X POST "${AUTH[@]}" -H 'content-type
 helios unpin main "$TARGET" 2>/dev/null
 check "unpinned closure is a candidate again" "$CLOSURE_SIZE" "$(lru_count 1)"
 
+echo "=== build traces"
+OUT_BASE="$(basename "$TARGET")"
+HEX="$(printf '%064d' 0 | tr 0 a)"
+traces() { curl -s -o /dev/null -w '%{http_code}' -X POST "${AUTH[@]}" -H 'content-type: application/json' -d "{\"entries\":[$1]}" "$URL/_api/v2/caches/main/build-traces"; }
+check "a current-format trace publishes" 201 "$(traces "{\"key\":{\"drvPath\":\"$HASH-x.drv\",\"outputName\":\"out\"},\"value\":{\"outPath\":\"$OUT_BASE\",\"signatures\":[]}}")"
+check "a legacy trace publishes" 201 "$(traces "{\"id\":\"sha256:$HEX!out\",\"outPath\":\"$OUT_BASE\",\"signatures\":[],\"dependentRealisations\":{}}")"
+check "a trace needs its output published" 409 "$(traces "{\"id\":\"sha256:$HEX!dev\",\"outPath\":\"00000000000000000000000000000000-x\"}")"
+check "an invalid trace id is refused" 400 "$(traces "{\"id\":\"sha1:abc!out\",\"outPath\":\"$OUT_BASE\"}")"
+CURRENT="$(curl -sf "$URL/main/build-trace-v2/$HASH-x.drv/out.doi")"
+check "current trace served, signed by the cache" "$OUT_BASE ${PUBKEY%%:*}" "$(echo "$CURRENT" | jq -r '.outPath + " " + .signatures[0].keyName')"
+LEGACY="$(curl -sf "$URL/main/realisations/sha256:$HEX!out.doi")"
+check "legacy trace served, signed by the cache" "sha256:$HEX!out ${PUBKEY%%:*}" "$(echo "$LEGACY" | jq -r '.id + " " + (.signatures[0] | split(":")[0])')"
+check "legacy trace served percent-encoded" 200 "$(status "$URL/main/realisations/sha256%3A$HEX%21out.doi")"
+check "each format only under its prefix" 404 "$(status "$URL/main/build-trace-v2/sha256:$HEX!out.doi")"
+check "unknown trace" 404 "$(status "$URL/main/build-trace-v2/$HASH-y.drv/out.doi")"
+
 echo "=== abuse"
 check "garbage upload rejected" 400 "$(status -X PUT -H "authorization: Bearer $PUSH_TOKEN" --data-binary 'not a zstd stream' "$URL/_api/v2/caches/main/nar")"
 check "raw non-NAR upload rejected" 400 "$(status -X PUT -H "authorization: Bearer $PUSH_TOKEN" --data-binary 'hello' "$URL/_api/v2/caches/main/nar?compression=none")"

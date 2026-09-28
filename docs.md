@@ -271,6 +271,7 @@ Substituter endpoints (`GET`/`HEAD`):
 | `/<cache>/nix-cache-info` | |
 | `/<cache>/<hash>.narinfo` | misses are answered from memory |
 | `/<cache>/nar/<file-hash>.nar.zst` | only served by caches that publish it |
+| `/<cache>/build-trace-v2/<drv>/<output>.doi`, `/<cache>/realisations/<id>.doi` | build traces of CA derivations, from memory |
 
 `GET /_api/v2/caches/<cache>` returns `{"name", "public", "publicKey"}` to
 anyone who can read the cache.
@@ -293,6 +294,10 @@ Chunks are verified as they arrive, as in a single `PUT`. An upload belongs
 to the token that started it, is dropped after an hour without a chunk or
 after an invalid one, and does not survive a server restart (the client
 then starts that NAR again).
+
+`POST /_api/v2/caches/<cache>/build-traces` (`push`) takes `{"entries": [...]}`
+as `nix store build-trace info --json` (or `nix realisation info --json`)
+prints them.
 
 Pin endpoints: `GET /_api/v2/caches/<cache>/pins` (`pull`), `POST
 /_api/v2/caches/<cache>/pins` with `{"storePaths": [...]}` and `DELETE
@@ -364,6 +369,23 @@ listing needs `pull`. Pins only hold back eviction: the integrity scrub
 still unpublishes a corrupt NAR, and pushing the closure again restores it.
 When what is left over quota is pinned, the daemon logs that it cannot
 free enough.
+
+## Content-addressed derivations
+
+A content-addressed (CA) derivation's output path is only known once it is
+built, so Nix looks it up in the cache's build traces ("realisations")
+before it can substitute. `helios push` publishes them for the CA outputs it
+pushes, when Nix has the experimental `ca-derivations` feature enabled.
+
+The cache serves whichever format the pushing Nix produces: Nix 2.35 and
+later use `/<cache>/build-trace-v2/<drv>/<output>.doi`, earlier versions
+`/<cache>/realisations/sha256:<hash>!<output>.doi`. Push and substitute
+with the same side of that change. An entry is accepted only when its output
+path is published in the cache, and is signed with the cache's key over the
+fingerprint Nix defines. Current Nix does not check those signatures when
+substituting (a wrong one is accepted too); what it checks is the output
+path's signed narinfo. Both formats are experimental upstream and may
+change.
 
 ## Watch-store
 

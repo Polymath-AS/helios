@@ -183,8 +183,50 @@ async fn upload_all(client: &Client, cache: &str, paths: &[&PathInfo], opts: &Op
 }
 
 pub async fn push(client: &Client, cache: &str, installables: &[String], opts: Options) -> anyhow::Result<()> {
-    let started = Instant::now();
     let infos = nix::path_infos(installables, opts.closure).await?;
+    // Outputs of content-addressed derivations need build traces as well,
+    // or Nix cannot tell which paths a CA derivation produced.
+    let derivers: Vec<String> =
+        infos.iter().filter(|i| i.ca.is_some()).filter_map(|i| i.deriver.clone()).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
+    let paths: HashSet<String> = infos.iter().map(|i| i.path.clone()).collect();
+    push_infos(client, cache, infos, opts).await?;
+    if !derivers.is_empty() {
+        push_build_traces(client, cache, &derivers, &paths).await?;
+    }
+    Ok(())
+}
+
+async fn push_build_traces(client: &Client, cache: &str, derivers: &[String], pushed: &HashSet<String>) -> anyhow::Result<()> {
+    let entries = match nix::build_traces(derivers).await {
+        Ok(entries) => entries,
+        Err(e) => {
+            tracing::warn!("not pushing build traces: {e:#}");
+            return Ok(());
+        }
+    };
+    // Only outputs this push published; the server refuses the rest.
+    let entries: Vec<serde_json::Value> = entries
+        .into_iter()
+        .filter(|e| {
+            // `value.outPath` from Nix 2.35 on, `outPath` before.
+            e["value"]["outPath"]
+                .as_str()
+                .or(e["outPath"].as_str())
+                .is_some_and(|p| pushed.contains(&if p.starts_with('/') { p.to_owned() } else { format!("/nix/store/{p}") }))
+        })
+        .collect();
+    let mut published = 0;
+    for chunk in entries.chunks(PUBLISH_BATCH) {
+        published += client.publish_build_traces(cache, chunk).await?["published"].as_u64().unwrap_or(0);
+    }
+    if !entries.is_empty() {
+        tracing::info!("published {published} build traces to '{cache}' ({} already there)", entries.len() as u64 - published);
+    }
+    Ok(())
+}
+
+async fn push_infos(client: &Client, cache: &str, infos: Vec<PathInfo>, opts: Options) -> anyhow::Result<()> {
+    let started = Instant::now();
     let total = infos.len();
 
     let mut missing: HashSet<String> = HashSet::new();

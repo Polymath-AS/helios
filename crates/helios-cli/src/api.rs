@@ -84,6 +84,10 @@ impl Client {
         self.call(Method::PUT, &format!("/caches/{cache}/nar?compression=zstd"), Some("application/x-nix-nar"), body).await
     }
 
+    pub async fn publish_build_traces(&self, cache: &str, entries: &[Value]) -> anyhow::Result<Value> {
+        self.post(&format!("/caches/{cache}/build-traces"), &json!({ "entries": entries })).await
+    }
+
     pub async fn pin(&self, cache: &str, store_paths: &[String]) -> anyhow::Result<Value> {
         self.post(&format!("/caches/{cache}/pins"), &json!({ "storePaths": store_paths })).await
     }

@@ -77,6 +77,17 @@ CREATE TABLE pins (
     PRIMARY KEY (cache_id, hash)
 );
 "#,
+    // Build traces of content-addressed derivations, rendered and signed.
+    r#"
+CREATE TABLE build_traces (
+    cache_id INTEGER NOT NULL REFERENCES caches (id),
+    id TEXT NOT NULL,
+    out_path TEXT NOT NULL,
+    body BLOB NOT NULL,
+    created_at INTEGER NOT NULL,
+    PRIMARY KEY (cache_id, id)
+);
+"#,
 ];
 
 const PRAGMAS: &str = "

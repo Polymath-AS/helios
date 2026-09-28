@@ -15,6 +15,8 @@ pub struct PathInfo {
     /// Full store paths.
     pub references: Vec<String>,
     pub deriver: Option<String>,
+    /// Set for content-addressed paths, such as CA derivation outputs.
+    pub ca: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -28,6 +30,8 @@ struct RawInfo {
     references: Vec<String>,
     #[serde(default)]
     deriver: Option<String>,
+    #[serde(default)]
+    ca: Option<String>,
 }
 
 const STORE_DIR: &str = "/nix/store/";
@@ -96,6 +100,7 @@ fn parse(stdout: &[u8]) -> anyhow::Result<Vec<PathInfo>> {
                 nar_size: info.nar_size,
                 references: info.references.iter().map(|r| full(r)).collect(),
                 deriver: info.deriver.map(|d| full(&d)),
+                ca: info.ca,
                 path,
             })
         })
@@ -137,6 +142,35 @@ pub fn topo_order(infos: Vec<PathInfo>) -> Vec<PathInfo> {
     order.into_iter().map(|i| slots[i].take().expect("each index placed once")).collect()
 }
 
+/// Build trace entries (realisations) for these derivations' outputs, as
+/// this Nix prints them: `{"key", "value"}` from 2.35 on, `{"id", "outPath"}`
+/// before. Empty when this Nix has CA derivations disabled.
+pub async fn build_traces(derivers: &[String]) -> anyhow::Result<Vec<serde_json::Value>> {
+    let outputs: Vec<String> = derivers.iter().map(|d| format!("{d}^*")).collect();
+    let mut out = None;
+    // `store build-trace` is the current name; `realisation` the old one.
+    for sub in [&["store", "build-trace", "info"][..], &["realisation", "info"][..]] {
+        let o = Command::new("nix")
+            .args(["--extra-experimental-features", "nix-command ca-derivations"])
+            .args(sub)
+            .args(["--json", "--"])
+            .args(&outputs)
+            .stderr(std::process::Stdio::piped())
+            .output()
+            .await
+            .context("running nix store build-trace info")?;
+        if o.status.success() {
+            out = Some(o);
+            break;
+        }
+        tracing::debug!("nix {}: {}", sub.join(" "), String::from_utf8_lossy(&o.stderr).trim());
+    }
+    let Some(out) = out else { return Ok(Vec::new()) };
+    let entries: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).context("parsing build trace entries")?;
+    // Store paths given as installables come back as `{"opaquePath"}`.
+    Ok(entries.into_iter().filter(|e| e.get("key").is_some() || e.get("id").is_some()).collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -149,6 +183,7 @@ mod tests {
             nar_size: 0,
             references: refs.iter().map(|r| format!("{STORE_DIR}{r}")).collect(),
             deriver: None,
+            ca: None,
         }
     }
 

@@ -76,13 +76,14 @@ pub struct AppState {
     pub counters: crate::stats::Counters,
     pub access: crate::stats::Access,
     pub uploads: crate::chunked::Sessions,
+    pub traces: RwLock<crate::traces::Traces>,
 }
 
 pub type Shared = Arc<AppState>;
 
 impl AppState {
     pub fn load(cfg: Config, db: Db, signer: Option<Signer>, audit: mpsc::UnboundedSender<AuditEvent>) -> anyhow::Result<Self> {
-        let (caches, index, tokens) = db.read(|conn| {
+        let (caches, index, tokens, traces) = db.read(|conn| {
             let mut caches = HashMap::new();
             let mut stmt = conn.prepare("SELECT id, name, is_public FROM caches")?;
             let mut rows = stmt.query([])?;
@@ -109,7 +110,7 @@ impl AppState {
                 let jti: String = r.get(0)?;
                 tokens.insert(jti.into_boxed_str(), TokenState { expires_at: r.get(1)?, revoked: r.get(2)? });
             }
-            Ok((caches, index, tokens))
+            Ok((caches, index, tokens, crate::traces::load(conn)?))
         })?;
 
         tracing::info!(caches = caches.len(), paths = index.len(), tokens = tokens.len(), "loaded state");
@@ -132,6 +133,7 @@ impl AppState {
             counters: Default::default(),
             access: Default::default(),
             uploads: Default::default(),
+            traces: RwLock::new(traces),
         })
     }
 

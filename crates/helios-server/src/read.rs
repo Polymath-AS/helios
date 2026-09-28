@@ -1,5 +1,6 @@
 //! The substituter read path: `/<cache>/nix-cache-info`,
-//! `/<cache>/<hash>.narinfo` and `/<cache>/nar/<file hash>.nar[.zst]`.
+//! `/<cache>/<hash>.narinfo`, `/<cache>/nar/<file hash>.nar[.zst]` and
+//! `/<cache>/build-trace-v2/<drv>/<output>.doi` (or `realisations/<id>.doi`).
 //! URLs are parsed by hand, without allocating.
 
 use axum::body::Body;
@@ -25,11 +26,16 @@ enum Route<'a> {
     CacheInfo,
     Narinfo(&'a str),
     Nar(&'a str, Compression),
+    /// `build-trace-v2/...` or `realisations/...`
+    BuildTrace(&'a str),
 }
 
 fn route(rest: &str) -> Option<Route<'_>> {
     if rest == "nix-cache-info" {
         return Some(Route::CacheInfo);
+    }
+    if rest.starts_with("build-trace-v2/") || rest.starts_with("realisations/") {
+        return Some(Route::BuildTrace(rest));
     }
     if let Some(hash) = rest.strip_suffix(".narinfo") {
         return (hash.len() == 32).then_some(Route::Narinfo(hash));
@@ -71,6 +77,12 @@ async fn serve(st: Shared, method: Method, uri: Uri, headers: HeaderMap) -> ApiR
 
     match route {
         Route::CacheInfo => Ok(([(header::CONTENT_TYPE, "text/x-nix-cache-info")], NIX_CACHE_INFO).into_response()),
+        Route::BuildTrace(id) => Ok(match crate::traces::lookup(&st, cache.id, id) {
+            Some(body) => {
+                ([(header::CONTENT_TYPE, HeaderValue::from_static("application/json")), (header::CACHE_CONTROL, cache_control)], body).into_response()
+            }
+            None => not_found(if cache.public { NEGATIVE } else { PRIVATE }),
+        }),
         Route::Narinfo(hash) => {
             let Some(hash) = helios_core::nix32_decode::<20>(hash) else {
                 return Ok(not_found(NEGATIVE));
