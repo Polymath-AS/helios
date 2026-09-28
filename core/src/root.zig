@@ -219,3 +219,34 @@ export fn hl_free(ptr: ?[*]u8, len: usize) void {
     if (ptr) |p| gpa.free(p[0..len]);
 }
 
+
+// ── Small primitives for the Rust side (keeps hmac/sha2/uuid crates out) ──
+
+const builtin = @import("builtin");
+
+export fn hl_sha256(data: [*]const u8, len: usize, out: *[32]u8) void {
+    archive.Sha256.hash(data[0..len], out, .{});
+}
+
+export fn hl_hmac_sha256(key: [*]const u8, key_len: usize, msg: [*]const u8, msg_len: usize, out: *[32]u8) void {
+    std.crypto.auth.hmac.sha2.HmacSha256.create(out, msg[0..msg_len], key[0..key_len]);
+}
+
+/// Fills `buf` from the OS CSPRNG.
+export fn hl_random(buf: [*]u8, len: usize) c_int {
+    if (builtin.os.tag == .linux) {
+        const linux = std.os.linux;
+        var off: usize = 0;
+        while (off < len) {
+            const rc = linux.getrandom(buf + off, len - off, 0);
+            switch (linux.errno(rc)) {
+                .SUCCESS => off += rc,
+                .INTR => {},
+                else => return HL_E_IO,
+            }
+        }
+    } else {
+        std.c.arc4random_buf(buf, len);
+    }
+    return HL_OK;
+}

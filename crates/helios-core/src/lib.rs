@@ -70,6 +70,9 @@ mod sys {
         pub fn hl_signer_public_key(s: *const Signer, out: *mut u8, cap: usize, out_len: *mut usize) -> c_int;
         pub fn hl_narinfo_render(input: *const NarinfoInput, signer: *const Signer, out: *mut *mut u8, out_len: *mut usize) -> c_int;
         pub fn hl_free(ptr: *mut u8, len: usize);
+        pub fn hl_sha256(data: *const u8, len: usize, out: *mut [u8; 32]);
+        pub fn hl_hmac_sha256(key: *const u8, key_len: usize, msg: *const u8, msg_len: usize, out: *mut [u8; 32]);
+        pub fn hl_random(buf: *mut u8, len: usize) -> c_int;
     }
 }
 
@@ -368,11 +371,90 @@ pub fn render_narinfo(input: &NarinfoInput<'_>, signer: Option<&Signer>) -> Resu
     Ok(text)
 }
 
+// ── Primitives ──
+
+pub fn sha256(data: &[u8]) -> [u8; 32] {
+    let mut out = [0u8; 32];
+    unsafe { sys::hl_sha256(data.as_ptr(), data.len(), &mut out) };
+    out
+}
+
+pub fn hmac_sha256(key: &[u8], msg: &[u8]) -> [u8; 32] {
+    let mut out = [0u8; 32];
+    unsafe { sys::hl_hmac_sha256(key.as_ptr(), key.len(), msg.as_ptr(), msg.len(), &mut out) };
+    out
+}
+
+/// Constant-time equality for equal-length byte strings.
+pub fn ct_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let diff = a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y));
+    std::hint::black_box(diff) == 0
+}
+
+/// Fills `buf` from the OS CSPRNG.
+pub fn random_bytes(buf: &mut [u8]) {
+    let rc = unsafe { sys::hl_random(buf.as_mut_ptr(), buf.len()) };
+    assert_eq!(rc, 0, "the OS random number generator failed");
+}
+
+/// A random (version 4) UUID in canonical hyphenated form.
+pub fn uuid_v4() -> String {
+    let mut b = [0u8; 16];
+    random_bytes(&mut b);
+    b[6] = (b[6] & 0x0f) | 0x40;
+    b[8] = (b[8] & 0x3f) | 0x80;
+    let hex: String = b.iter().map(|x| format!("{x:02x}")).collect();
+    format!("{}-{}-{}-{}-{}", &hex[0..8], &hex[8..12], &hex[12..16], &hex[16..20], &hex[20..32])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const KEY: &str = "test-1:suJsWimvBNFUIc0JJE18OfOMygH/f2GuTC2/XwD6rPKkV+1VKilMIkXl6Ax9hqeKpUF/BSOH+Fqng4tqZlirhw==";
+
+    /// A scratch directory removed on drop (keeps tempfile out of the tree).
+    struct TempDir(std::path::PathBuf);
+
+    impl TempDir {
+        fn new() -> Self {
+            let dir = std::env::temp_dir().join(format!("helios-core-test-{}", uuid_v4()));
+            std::fs::create_dir(&dir).unwrap();
+            Self(dir)
+        }
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn primitives() {
+        // RFC 4231 test case 2.
+        let mac = hmac_sha256(b"Jefe", b"what do ya want for nothing?");
+        assert_eq!(nix32_encode(&mac).len(), 52);
+        assert_eq!(
+            mac.iter().map(|b| format!("{b:02x}")).collect::<String>(),
+            "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
+        );
+        assert_eq!(
+            sha256(b"abc").iter().map(|b| format!("{b:02x}")).collect::<String>(),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        assert!(ct_eq(b"same", b"same") && !ct_eq(b"same", b"diff") && !ct_eq(b"a", b"ab"));
+        let (a, b) = (uuid_v4(), uuid_v4());
+        assert_ne!(a, b);
+        assert_eq!(a.len(), 36);
+        assert_eq!(&a[14..15], "4");
+    }
 
     #[test]
     fn nix32_round_trip() {
@@ -392,7 +474,7 @@ mod tests {
 
     #[test]
     fn dump_matches_compressor_and_verifier() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = TempDir::new();
         let root = dir.path().join("pkg");
         std::fs::create_dir_all(root.join("bin")).unwrap();
         std::fs::write(root.join("bin/hello"), b"#!/bin/sh\necho hi\n").unwrap();

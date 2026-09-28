@@ -106,6 +106,13 @@ typedef struct {
 int hl_narinfo_render(const hl_narinfo_input *in, const hl_signer *signer, char **out, size_t *out_len);
 void hl_free(char *ptr, size_t len);
 
+/* ── Primitives ── */
+
+void hl_sha256(const uint8_t *data, size_t len, uint8_t out[32]);
+void hl_hmac_sha256(const uint8_t *key, size_t key_len, const uint8_t *msg, size_t msg_len, uint8_t out[32]);
+/* Fills buf from the OS CSPRNG. */
+int hl_random(uint8_t *buf, size_t len);
+
 #ifdef __cplusplus
 }
 #endif
