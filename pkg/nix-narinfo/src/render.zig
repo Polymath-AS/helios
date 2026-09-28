@@ -61,7 +61,10 @@ pub const Signer = struct {
         if (n != raw.len) return error.InvalidKey;
         decoder.decode(&raw, b64) catch return error.InvalidKey;
         const secret = Ed25519.SecretKey.fromBytes(raw) catch return error.InvalidKey;
-        const key_pair = Ed25519.KeyPair.fromSecretKey(secret) catch return error.InvalidKey;
+        // std's fromSecretKey checks the embedded public half only under
+        // runtime safety; derive it from the seed in every build mode.
+        const key_pair = Ed25519.KeyPair.generateDeterministic(secret.seed()) catch return error.InvalidKey;
+        if (!std.mem.eql(u8, &key_pair.public_key.toBytes(), &secret.publicKeyBytes())) return error.InvalidKey;
 
         var expanded: [64]u8 = undefined;
         std.crypto.hash.sha2.Sha512.hash(raw[0..32], &expanded, .{});
@@ -174,6 +177,14 @@ pub fn render(allocator: std.mem.Allocator, in: Input, signer: ?*const Signer) E
         try refs.append(allocator, r);
     }
     std.mem.sort([]const u8, refs.items, {}, lessThanStr);
+    // Nix reads references into a set, so a duplicate would break the Sig.
+    var unique: usize = 0;
+    for (refs.items) |r| {
+        if (unique > 0 and std.mem.eql(u8, refs.items[unique - 1], r)) continue;
+        refs.items[unique] = r;
+        unique += 1;
+    }
+    refs.shrinkRetainingCapacity(unique);
 
     var nar_hash: [52]u8 = undefined;
     nix32.encode(&nar_hash, in.nar_hash);
@@ -306,4 +317,43 @@ test "generated keys parse and sign" {
     const theirs = (try signer.key_pair.sign("msg", null)).toBytes();
     try std.testing.expectEqualSlices(u8, &theirs, &(try signer.signRaw("msg")));
     try std.testing.expectError(error.InvalidKey, Signer.generate(&text, a, "bad:name", [_]u8{1} ** 32));
+}
+
+test "rejects a secret key whose public half does not match its seed" {
+    const a = std.testing.allocator;
+    const prefix = "test-1:";
+    const good = prefix ++ "suJsWimvBNFUIc0JJE18OfOMygH/f2GuTC2/XwD6rPKkV+1VKilMIkXl6Ax9hqeKpUF/BSOH+Fqng4tqZlirhw==";
+    var raw: [64]u8 = undefined;
+    try std.base64.standard.Decoder.decode(&raw, good[prefix.len..]);
+    // A valid point, but the public key of another seed.
+    raw[32..64].* = (try Ed25519.KeyPair.generateDeterministic([_]u8{7} ** 32)).public_key.toBytes();
+    var text: [good.len]u8 = undefined;
+    @memcpy(text[0..prefix.len], prefix);
+    _ = std.base64.standard.Encoder.encode(text[prefix.len..], &raw);
+    try std.testing.expectError(error.InvalidKey, Signer.parse(a, &text));
+}
+
+test "duplicate references are rendered and signed once" {
+    const a = std.testing.allocator;
+    const signer = try Signer.parse(a, "test-1:suJsWimvBNFUIc0JJE18OfOMygH/f2GuTC2/XwD6rPKkV+1VKilMIkXl6Ax9hqeKpUF/BSOH+Fqng4tqZlirhw==");
+    defer signer.destroy(a);
+    const nar = [_]u8{1} ** 32;
+    const file = [_]u8{2} ** 32;
+    var in: Input = .{
+        .store_path = "/nix/store/0mdqa9w1p6cmli6976v4wi0sw9r4p5pr-hello",
+        .nar_hash = &nar,
+        .nar_size = 1234,
+        .file_hash = &file,
+        .file_size = 99,
+        .compression = "zstd",
+        .references = "1mdqa9w1p6cmli6976v4wi0sw9r4p5pr-b 0mdqa9w1p6cmli6976v4wi0sw9r4p5pr-hello 1mdqa9w1p6cmli6976v4wi0sw9r4p5pr-b",
+        .deriver = "",
+        .system = "",
+    };
+    const dup = try render(a, in, signer);
+    defer a.free(dup);
+    in.references = "0mdqa9w1p6cmli6976v4wi0sw9r4p5pr-hello 1mdqa9w1p6cmli6976v4wi0sw9r4p5pr-b";
+    const once = try render(a, in, signer);
+    defer a.free(once);
+    try std.testing.expectEqualStrings(once, dup);
 }
