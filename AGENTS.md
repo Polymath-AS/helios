@@ -15,8 +15,8 @@ A self-hosted Nix binary cache: Rust server and CLI over a Zig core.
   itself.
 - `nix/`: the NixOS module (`services.helios`), the OCI image, and their VM
   tests.
-- `bench/`: comparisons against Cachix's libraries and Nix C++. Not part of
-  the Cargo workspace.
+- `bench/`: comparisons against the Haskell Nix libraries, the Rust
+  nix-flake-lock crate and Nix C++. Not part of the Cargo workspace.
 
 Put Nix format logic in a `pkg/*` package and expose it through
 `core/src/root.zig` only when Rust needs it. Keep calls across the C ABI

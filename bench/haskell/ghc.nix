@@ -1,4 +1,4 @@
-# GHC with the Haskell Nix libraries Cachix builds on.
+# GHC with the Haskell Nix libraries (nix-narinfo, nix-derivation, hnix-store).
 { pkgs ? import <nixpkgs> { } }:
 pkgs.haskellPackages.ghcWithPackages (p: [
   p.nix-narinfo

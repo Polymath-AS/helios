@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Benchmarks pkg/* (Zig) against the Haskell libraries Cachix uses, plus
-# Nix's own C++ NAR serialiser. Single-threaded, same corpus for both.
+# Benchmarks pkg/* (Zig) against the Haskell Nix libraries (nix-narinfo,
+# nix-derivation, hnix-store) and Nix's own C++ NAR serialiser.
+# Single-threaded, same corpus for both.
 #
 # Usage: bench/run.sh [store-path]   (inside `nix develop`)
 set -euo pipefail

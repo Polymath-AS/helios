@@ -13,7 +13,7 @@ core/         libhelios: C ABI over pkg/*, built as a static library
 crates/       helios-core (Rust bindings), helios-server, helios-cli,
               helios-daemon (auto-GC, scrub, backups, metrics)
 nix/          NixOS module (services.helios) and its VM test
-bench/        benchmarks against Cachix's Nix libraries and Nix C++
+bench/        benchmarks against the Haskell and Rust Nix libraries and Nix C++
 scripts/      e2e.sh (end-to-end test), test-zig.sh (Zig unit tests)
 ```
 

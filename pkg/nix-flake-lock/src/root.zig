@@ -1,7 +1,7 @@
 //! Nix `flake.lock` parsing (versions 5-7), `follows` validation and
 //! resolution, and canonical version 7 serialisation, without Nix.
 //!
-//! Semantics follow cachix/nix-flake-lock (Rust): last duplicate key wins,
+//! Semantics follow the nix-flake-lock crate (Rust): last duplicate key wins,
 //! version 5 `info` is overlaid onto `locked`, unreachable nodes are
 //! dropped, and output is byte-identical to Nix's canonical writer.
 //!

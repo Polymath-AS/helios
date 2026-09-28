@@ -399,8 +399,8 @@ and the CLI accepts `--url` with `--token-file` (or `HELIOS_URL` and
 ## Benchmarks
 
 ```bash
-bench/run.sh            # pkg/* vs Cachix's Haskell libraries and Nix C++
-bench/flake-lock.sh     # pkg/nix-flake-lock vs cachix/nix-flake-lock
+bench/run.sh            # pkg/* vs the Haskell Nix libraries and Nix C++
+bench/flake-lock.sh     # pkg/nix-flake-lock vs the nix-flake-lock crate
 ```
 
 Both use the local store as their corpus and run single-threaded.

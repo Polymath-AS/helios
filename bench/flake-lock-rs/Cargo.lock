@@ -24,7 +24,8 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 [[package]]
 name = "nix-flake-lock"
 version = "0.1.0"
-source = "git+https://github.com/cachix/nix-flake-lock?rev=61c13ac#61c13ac3b0c13dd394dcad2c93f76c89c6b541bd"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cb7815d99678fd80c5d646d68ab0360132754e4c0ba0c5e203bc7b4f353de6d9"
 dependencies = [
  "itoa",
  "memchr",

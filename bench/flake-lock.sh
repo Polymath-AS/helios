@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# pkg/nix-flake-lock (Zig) vs cachix/nix-flake-lock (Rust, pinned in
+# pkg/nix-flake-lock (Zig) vs the nix-flake-lock crate (Rust, pinned in
 # bench/flake-lock-rs): a differential check that both produce identical
 # canonical output and validation results, then a single-threaded benchmark.
 #
@@ -19,7 +19,7 @@ RS="$ROOT/bench/flake-lock-rs/target/release/flake-lock-rs"
 ZIG="$ROOT/bench/zig/zig-out/bin/flake-lock"
 
 mkdir -p "$W/fixtures" "$W/real" "$W/fuzz"
-UPSTREAM="$(find "${CARGO_HOME:-$HOME/.cargo}/git/checkouts" -path '*nix-flake-lock*/tests/fixtures' -type d | head -1)"
+UPSTREAM="$(find "${CARGO_HOME:-$HOME/.cargo}/registry/src" -path '*/nix-flake-lock-0.1.0/tests/fixtures' -type d | head -1)"| head -1)"
 cp "$UPSTREAM"/*.lock "$W/fixtures/"
 "$RS" gen "$W/fixtures"
 i=0

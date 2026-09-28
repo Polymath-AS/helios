@@ -2,7 +2,7 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE PackageImports #-}
 
--- Benchmarks for the Haskell Nix libraries in Cachix's dependency tree
+-- Benchmarks for the Haskell Nix libraries
 -- (nix-narinfo, nix-derivation, hnix-store-core, hnix-store-nar, ed25519).
 -- Mirrors bench/zig/src/main.zig: same corpus, same output format
 -- (`<name> <ops> <best-round-ns>`), best of 7 rounds after a warm-up.

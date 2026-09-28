@@ -1,4 +1,4 @@
-# Reference harness: cachix/nix-flake-lock, pinned. Not part of the workspace.
+# Reference harness: the nix-flake-lock crate (Rust), pinned. Not part of the workspace.
 [package]
 name = "flake-lock-rs"
 version = "0.0.0"
@@ -6,7 +6,7 @@ edition = "2024"
 publish = false
 
 [dependencies]
-nix-flake-lock = { git = "https://github.com/cachix/nix-flake-lock", rev = "61c13ac" }
+nix-flake-lock = "=0.1.0"
 
 [profile.release]
 lto = "fat"
