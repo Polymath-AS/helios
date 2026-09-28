@@ -1,8 +1,8 @@
 mod api;
 mod config;
-mod transport;
 mod nix;
 mod push;
+mod transport;
 mod watch;
 
 use anyhow::Context;
@@ -102,7 +102,10 @@ enum TokenCmd {
         expires: i64,
     },
     List,
-    Revoke { jti: String, reason: String },
+    Revoke {
+        jti: String,
+        reason: String,
+    },
 }
 
 fn split(s: &str) -> Vec<String> {
@@ -151,7 +154,10 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Cache(CacheCmd::List) => print(&client.admin_get("/admin/caches").await?),
         Command::Token(TokenCmd::Create { subject, caches, perms, expires }) => {
             let v = client
-                .admin_post("/admin/tokens", json!({ "subject": subject, "caches": split(&caches), "perms": split(&perms), "expiresInDays": expires }))
+                .admin_post(
+                    "/admin/tokens",
+                    json!({ "subject": subject, "caches": split(&caches), "perms": split(&perms), "expiresInDays": expires }),
+                )
                 .await?;
             eprintln!("store this token now; it is not shown again");
             print(&v);

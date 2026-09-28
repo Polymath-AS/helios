@@ -175,7 +175,14 @@ impl Client {
     }
 
     /// Sends a request and reads the whole response body.
-    pub async fn send(&self, method: Method, path: &str, token: &str, content_type: Option<&str>, body: Body) -> anyhow::Result<(http::StatusCode, Bytes)> {
+    pub async fn send(
+        &self,
+        method: Method,
+        path: &str,
+        token: &str,
+        content_type: Option<&str>,
+        body: Body,
+    ) -> anyhow::Result<(http::StatusCode, Bytes)> {
         let mut req = Request::builder()
             .method(method)
             .uri(self.path(path))

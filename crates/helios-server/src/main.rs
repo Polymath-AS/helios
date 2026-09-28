@@ -53,9 +53,7 @@ pub fn router(st: Shared) -> Router {
 
 async fn healthz(State(st): State<Shared>) -> (StatusCode, axum::Json<serde_json::Value>) {
     let db = st.db.clone();
-    let ok = tokio::task::spawn_blocking(move || db.read(|c| c.query_row("SELECT 1", [], |_| Ok(()))).is_ok())
-        .await
-        .unwrap_or(false);
+    let ok = tokio::task::spawn_blocking(move || db.read(|c| c.query_row("SELECT 1", [], |_| Ok(()))).is_ok()).await.unwrap_or(false);
     let status = if ok { StatusCode::OK } else { StatusCode::SERVICE_UNAVAILABLE };
     (status, axum::Json(json!({ "ok": ok, "service": "helios" })))
 }

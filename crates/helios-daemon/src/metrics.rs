@@ -99,9 +99,7 @@ pub async fn serve(d: Arc<Daemon>, addr: SocketAddr) -> anyhow::Result<()> {
                 let d = d.clone();
                 async move {
                     if req.uri().path() == "/metrics" {
-                        Response::builder()
-                            .header(header::CONTENT_TYPE, "text/plain; version=0.0.4")
-                            .body(Full::new(Bytes::from(render(&d).await)))
+                        Response::builder().header(header::CONTENT_TYPE, "text/plain; version=0.0.4").body(Full::new(Bytes::from(render(&d).await)))
                     } else {
                         Response::builder().status(StatusCode::NOT_FOUND).body(Full::new(Bytes::from_static(b"not found\n")))
                     }

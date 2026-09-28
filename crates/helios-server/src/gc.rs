@@ -81,8 +81,7 @@ pub fn collect_blobs(st: &Shared) -> anyhow::Result<(usize, u64)> {
                     "SELECT id, file_hash, compression, file_size FROM blobs b WHERE created_at <= ?1
                      AND NOT EXISTS (SELECT 1 FROM paths p WHERE p.blob_id = b.id) LIMIT ?2",
                 )?;
-                stmt.query_map(params![cutoff, BLOB_BATCH], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
-                    .collect::<rusqlite::Result<_>>()?
+                stmt.query_map(params![cutoff, BLOB_BATCH], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?.collect::<rusqlite::Result<_>>()?
             };
             {
                 let mut del = tx.prepare_cached("DELETE FROM blobs WHERE id = ?1")?;

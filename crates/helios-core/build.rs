@@ -43,20 +43,14 @@ fn main() {
     if env::var_os("ZIG_GLOBAL_CACHE_DIR").is_none() {
         cmd.env("ZIG_GLOBAL_CACHE_DIR", out.join("zig-global-cache"));
     }
-    let status = cmd
-        .status()
-        .unwrap_or_else(|e| panic!("failed to run `{zig} build` (is zig 0.16 on PATH?): {e}"));
+    let status = cmd.status().unwrap_or_else(|e| panic!("failed to run `{zig} build` (is zig 0.16 on PATH?): {e}"));
     assert!(status.success(), "zig build failed for libhelios");
 
     println!("cargo:rustc-link-search=native={}", prefix.join("lib").display());
     println!("cargo:rustc-link-lib=static=helios");
     println!("cargo:include={}", prefix.join("include").display());
 
-    if pkg_config::Config::new()
-        .atleast_version("1.5")
-        .probe("libzstd")
-        .is_err()
-    {
+    if pkg_config::Config::new().atleast_version("1.5").probe("libzstd").is_err() {
         println!("cargo:rustc-link-lib=zstd");
     }
 }

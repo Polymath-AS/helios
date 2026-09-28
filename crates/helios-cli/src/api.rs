@@ -86,10 +86,8 @@ impl Client {
 
     pub async fn publish(&self, cache: &str, paths: &[PathSpec]) -> anyhow::Result<Publish> {
         let body = transport::full(serde_json::to_vec(&json!({ "paths": paths }))?);
-        let (status, bytes) = self
-            .http
-            .send(Method::POST, &format!("/_api/v2/caches/{cache}/paths"), &self.token, Some("application/json"), body)
-            .await?;
+        let (status, bytes) =
+            self.http.send(Method::POST, &format!("/_api/v2/caches/{cache}/paths"), &self.token, Some("application/json"), body).await?;
         if status == StatusCode::CONFLICT {
             let v: Value = serde_json::from_slice(&bytes)?;
             if v["error"] == "nar_required" {

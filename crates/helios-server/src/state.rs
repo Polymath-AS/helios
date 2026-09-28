@@ -9,8 +9,8 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use helios_core::{Compression, Signer};
-use std::sync::{PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use rusqlite::params;
+use std::sync::{PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use tokio::sync::mpsc;
 
 use crate::audit::AuditEvent;

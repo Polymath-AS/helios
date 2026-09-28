@@ -49,23 +49,26 @@ fn param<T: std::str::FromStr>(uri: &Uri, name: &str) -> Option<T> {
 async fn stats(State(st): State<Shared>) -> ApiResult<Json<Value>> {
     let db_st = st.clone();
     let (caches, blob_count, blob_bytes, unreferenced) = blocking(move || {
-        db_st.db.read(|conn| {
-            let mut stmt = conn.prepare_cached(
-                "SELECT c.name, c.is_public, count(p.id) FROM caches c LEFT JOIN paths p ON p.cache_id = c.id GROUP BY c.id ORDER BY c.name",
-            )?;
-            let caches: Vec<Value> = stmt
-                .query_map([], |r| Ok(json!({ "name": r.get::<_, String>(0)?, "public": r.get::<_, bool>(1)?, "paths": r.get::<_, u64>(2)? })))?
-                .collect::<rusqlite::Result<_>>()?;
-            let (count, bytes): (u64, u64) = conn.query_row("SELECT count(*), coalesce(sum(file_size), 0) FROM blobs", [], |r| Ok((r.get(0)?, r.get(1)?)))?;
-            // Blobs no path uses: GC deletes them once their upload grace ends.
-            let unreferenced: u64 = conn.query_row(
-                "SELECT coalesce(sum(file_size), 0) FROM blobs b WHERE NOT EXISTS (SELECT 1 FROM paths p WHERE p.blob_id = b.id)",
-                [],
-                |r| r.get(0),
-            )?;
-            Ok((caches, count, bytes, unreferenced))
-        })
-        .map_err(internal)
+        db_st
+            .db
+            .read(|conn| {
+                let mut stmt = conn.prepare_cached(
+                    "SELECT c.name, c.is_public, count(p.id) FROM caches c LEFT JOIN paths p ON p.cache_id = c.id GROUP BY c.id ORDER BY c.name",
+                )?;
+                let caches: Vec<Value> = stmt
+                    .query_map([], |r| Ok(json!({ "name": r.get::<_, String>(0)?, "public": r.get::<_, bool>(1)?, "paths": r.get::<_, u64>(2)? })))?
+                    .collect::<rusqlite::Result<_>>()?;
+                let (count, bytes): (u64, u64) =
+                    conn.query_row("SELECT count(*), coalesce(sum(file_size), 0) FROM blobs", [], |r| Ok((r.get(0)?, r.get(1)?)))?;
+                // Blobs no path uses: GC deletes them once their upload grace ends.
+                let unreferenced: u64 = conn.query_row(
+                    "SELECT coalesce(sum(file_size), 0) FROM blobs b WHERE NOT EXISTS (SELECT 1 FROM paths p WHERE p.blob_id = b.id)",
+                    [],
+                    |r| r.get(0),
+                )?;
+                Ok((caches, count, bytes, unreferenced))
+            })
+            .map_err(internal)
     })
     .await?;
     let c = &st.counters;
@@ -217,7 +220,9 @@ async fn quarantine(State(st): State<Shared>, Json(req): Json<QuarantineReq>) ->
         let found = st.db.write(|conn| -> rusqlite::Result<Option<(Vec<PathKey>, String)>> {
             let tx = conn.transaction()?;
             let Some((id, compression)) = tx
-                .query_row("SELECT id, compression FROM blobs WHERE file_hash = ?1", [&file_hash[..]], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
+                .query_row("SELECT id, compression FROM blobs WHERE file_hash = ?1", [&file_hash[..]], |r| {
+                    Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+                })
                 .optional()?
             else {
                 return Ok(None);
@@ -265,7 +270,9 @@ async fn checkpoint(State(st): State<Shared>) -> ApiResult<Json<Value>> {
     blocking(move || {
         let (busy, log, done) = st
             .db
-            .write(|conn| conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))))
+            .write(|conn| {
+                conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)))
+            })
             .map_err(internal)?;
         Ok(Json(json!({ "busy": busy != 0, "walPages": log, "checkpointedPages": done })))
     })

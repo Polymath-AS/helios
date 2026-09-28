@@ -10,8 +10,8 @@ use bytes::Bytes;
 use helios_core::Compression;
 use rusqlite::{OptionalExtension, params};
 
-use crate::state::Locked;
 use crate::error::{ApiError, ApiResult};
+use crate::state::Locked;
 use crate::state::{PathKey, Shared};
 
 const NIX_CACHE_INFO: &str = "StoreDir: /nix/store\nWantMassQuery: 1\nPriority: 40\n";
@@ -140,9 +140,7 @@ async fn nar_response(
     method: &Method,
     cache_control: HeaderValue,
 ) -> ApiResult<Response> {
-    let mut builder = Response::builder()
-        .header(header::CONTENT_TYPE, "application/x-nix-nar")
-        .header(header::CACHE_CONTROL, cache_control);
+    let mut builder = Response::builder().header(header::CONTENT_TYPE, "application/x-nix-nar").header(header::CACHE_CONTROL, cache_control);
 
     if let Some(prefix) = &st.cfg.accel_redirect {
         let name = helios_core::nix32_encode(file_hash);

@@ -24,9 +24,7 @@ impl Client {
     }
 
     async fn call<T: DeserializeOwned>(&self, method: Method, path: &str, body: Option<Value>) -> anyhow::Result<T> {
-        let stream = UnixStream::connect(&self.socket)
-            .await
-            .with_context(|| format!("connecting to {}", self.socket.display()))?;
+        let stream = UnixStream::connect(&self.socket).await.with_context(|| format!("connecting to {}", self.socket.display()))?;
         let (mut sender, conn) = hyper::client::conn::http1::handshake(Io(stream)).await?;
         tokio::spawn(conn);
         let mut req = Request::builder().method(method).uri(path).header(header::HOST, "helios");

@@ -154,12 +154,7 @@ pub async fn push(client: &Client, cache: &str, installables: &[String], opts: O
         known.extend(client.known(cache, chunk).await?);
     }
     let uploads: Vec<&PathInfo> = todo.iter().filter(|i| !known.contains(&i.nar_hash)).collect();
-    eprintln!(
-        "{total} paths, {} missing from '{cache}': uploading {}, reusing {} NARs",
-        todo.len(),
-        uploads.len(),
-        todo.len() - uploads.len()
-    );
+    eprintln!("{total} paths, {} missing from '{cache}': uploading {}, reusing {} NARs", todo.len(), uploads.len(), todo.len() - uploads.len());
     let mut uploaded_bytes = upload_all(client, cache, &uploads, &opts).await?;
 
     let ordered = nix::topo_order(todo);
@@ -202,4 +197,3 @@ pub async fn push(client: &Client, cache: &str, installables: &[String], opts: O
     );
     Ok(())
 }
-

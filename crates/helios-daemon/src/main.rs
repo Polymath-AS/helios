@@ -175,14 +175,15 @@ fn main() -> anyhow::Result<()> {
             let d = d.clone();
             let rate = args.scrub_rate;
             // Wait a full interval first so restarts do not re-read everything.
-            tasks.push(tokio::spawn(async move {
-                periodic("scrub", args.scrub_interval, true, &d.metrics.errors_scrub, || scrub::run(&d, rate)).await
-            }));
+            tasks.push(tokio::spawn(
+                async move { periodic("scrub", args.scrub_interval, true, &d.metrics.errors_scrub, || scrub::run(&d, rate)).await },
+            ));
         }
         {
             let d = d.clone();
             tasks.push(tokio::spawn(async move {
-                periodic("checkpoint", args.checkpoint_interval.max(Duration::from_secs(1)), true, &d.metrics.errors_db, || maint::checkpoint(&d)).await
+                periodic("checkpoint", args.checkpoint_interval.max(Duration::from_secs(1)), true, &d.metrics.errors_db, || maint::checkpoint(&d))
+                    .await
             }));
         }
         {

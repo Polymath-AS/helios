@@ -33,11 +33,8 @@ impl FromRequestParts<Shared> for Audit {
     type Rejection = std::convert::Infallible;
 
     async fn from_request_parts(parts: &mut Parts, st: &Shared) -> Result<Self, Self::Rejection> {
-        let forwarded = st
-            .cfg
-            .trust_proxy
-            .then(|| parts.headers.get("x-forwarded-for")?.to_str().ok()?.split(',').next()?.trim().parse().ok())
-            .flatten();
+        let forwarded =
+            st.cfg.trust_proxy.then(|| parts.headers.get("x-forwarded-for")?.to_str().ok()?.split(',').next()?.trim().parse().ok()).flatten();
         let peer = parts.extensions.get::<ConnectInfo<SocketAddr>>().map(|c| c.0.ip());
         Ok(Self { ip: forwarded.or(peer) })
     }
@@ -74,9 +71,8 @@ pub async fn run(db: Db, mut rx: mpsc::UnboundedReceiver<AuditEvent>) {
             db.write(|conn| -> rusqlite::Result<()> {
                 let tx = conn.transaction()?;
                 {
-                    let mut stmt = tx.prepare_cached(
-                        "INSERT INTO audit_log (ts, actor, action, cache, detail, ip, status) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                    )?;
+                    let mut stmt = tx
+                        .prepare_cached("INSERT INTO audit_log (ts, actor, action, cache, detail, ip, status) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)")?;
                     for e in &events {
                         stmt.execute(params![e.ts, e.actor, e.action, e.cache, e.detail, e.ip, e.status])?;
                     }

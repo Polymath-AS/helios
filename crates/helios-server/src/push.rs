@@ -23,10 +23,10 @@ use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::state::Locked;
 use crate::audit::Audit;
 use crate::auth::Perm;
 use crate::error::{ApiError, ApiResult};
+use crate::state::Locked;
 use crate::state::{CacheInfo, PathKey, Shared};
 
 const MAX_MISSING_BATCH: usize = 100_000;
@@ -97,13 +97,7 @@ pub async fn known(
         })
     })
     .await??;
-    let known: Vec<&String> = req
-        .nar_hashes
-        .iter()
-        .zip(&parsed)
-        .filter(|(_, h)| h.is_some_and(|h| found.contains(&h[..])))
-        .map(|(s, _)| s)
-        .collect();
+    let known: Vec<&String> = req.nar_hashes.iter().zip(&parsed).filter(|(_, h)| h.is_some_and(|h| found.contains(&h[..]))).map(|(s, _)| s).collect();
     Ok(Json(json!({ "known": known })))
 }
 
@@ -129,8 +123,7 @@ pub async fn upload(
     cache_for(&st, &name)?;
     let identity = st.authorize(&headers, &name, Perm::Push)?;
     let requested = uri.query().unwrap_or("").split('&').find_map(|kv| kv.strip_prefix("compression=")).unwrap_or("zstd");
-    let compression = Compression::parse(requested)
-        .ok_or_else(|| ApiError::bad_request("compression must be zstd or none"))?;
+    let compression = Compression::parse(requested).ok_or_else(|| ApiError::bad_request("compression must be zstd or none"))?;
 
     let tmp = st.tmp_dir().join(helios_core::uuid_v4());
     let (tx, mut rx) = tokio::sync::mpsc::channel::<Bytes>(32);
@@ -398,9 +391,8 @@ fn render_and_insert(st: &Shared, prepared: Vec<Prepared>) -> ApiResult<Outcome>
             "SELECT id, file_hash, file_size, compression, nar_size FROM blobs
              WHERE nar_hash = ?1 ORDER BY compression = 'zstd' DESC, id LIMIT 1",
         )?;
-        let mut by_file = conn.prepare_cached(
-            "SELECT id, file_hash, file_size, compression, nar_size FROM blobs WHERE file_hash = ?1 AND nar_hash = ?2",
-        )?;
+        let mut by_file =
+            conn.prepare_cached("SELECT id, file_hash, file_size, compression, nar_size FROM blobs WHERE file_hash = ?1 AND nar_hash = ?2")?;
         let row = |r: &rusqlite::Row<'_>| {
             Ok(Blob {
                 id: r.get(0)?,
@@ -429,10 +421,8 @@ fn render_and_insert(st: &Shared, prepared: Vec<Prepared>) -> ApiResult<Outcome>
     let threads = std::thread::available_parallelism().map_or(1, |n| n.get()).min(work.len().div_ceil(64).max(1));
     let chunk = work.len().div_ceil(threads).max(1);
     let rendered: Vec<Result<Rendered, ApiError>> = std::thread::scope(|scope| {
-        let handles: Vec<_> = work
-            .chunks(chunk)
-            .map(|part| scope.spawn(move || part.iter().map(|(p, b)| render(st, p, b)).collect::<Vec<_>>()))
-            .collect();
+        let handles: Vec<_> =
+            work.chunks(chunk).map(|part| scope.spawn(move || part.iter().map(|(p, b)| render(st, p, b)).collect::<Vec<_>>())).collect();
         handles.into_iter().flat_map(|h| h.join().expect("render thread panicked")).collect()
     });
     let rendered: Vec<Rendered> = rendered.into_iter().collect::<Result<_, _>>()?;

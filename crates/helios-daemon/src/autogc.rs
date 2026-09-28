@@ -56,11 +56,8 @@ struct Evicted {
 
 /// Bytes to free now, or 0 when within policy.
 pub fn to_free(policy: &Policy, used: u64, free_disk: u64) -> u64 {
-    let over_quota = if policy.quota > 0 && used as f64 > policy.quota as f64 * policy.high {
-        used - (policy.quota as f64 * policy.low) as u64
-    } else {
-        0
-    };
+    let over_quota =
+        if policy.quota > 0 && used as f64 > policy.quota as f64 * policy.high { used - (policy.quota as f64 * policy.low) as u64 } else { 0 };
     let short_disk = if policy.min_free > 0 && free_disk < policy.min_free {
         // Overshoot a little so the next upload does not trigger it again.
         (policy.min_free as f64 * 1.1) as u64 - free_disk

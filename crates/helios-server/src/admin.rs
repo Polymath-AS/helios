@@ -7,10 +7,10 @@ use rusqlite::params;
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::state::Locked;
 use crate::audit::Audit;
 use crate::auth::{self, AUDIENCE, Claims, ISSUER, MAX_CACHES_PER_TOKEN, MAX_PERMS_PER_TOKEN, Perm};
 use crate::error::{ApiError, ApiResult};
+use crate::state::Locked;
 use crate::state::{Shared, TokenState};
 
 const MAX_TOKEN_LIFETIME_DAYS: i64 = 365;

@@ -5,10 +5,11 @@ use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use std::sync::{Mutex, PoisonError};
 use rusqlite::{Connection, OpenFlags};
+use std::sync::{Mutex, PoisonError};
 
-const MIGRATIONS: &[&str] = &[r#"
+const MIGRATIONS: &[&str] = &[
+    r#"
 CREATE TABLE caches (
     id INTEGER PRIMARY KEY,
     name TEXT NOT NULL UNIQUE,
@@ -130,7 +131,5 @@ fn migrate(conn: &mut Connection) -> rusqlite::Result<()> {
 }
 
 pub fn now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs() as i64)
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
 }

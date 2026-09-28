@@ -40,11 +40,7 @@ pub fn queue(spool: &Path, paths: &str) -> anyhow::Result<usize> {
 /// Spool entries in arrival order, skipping ones still being written.
 fn pending(spool: &Path) -> anyhow::Result<Vec<PathBuf>> {
     let mut entries: Vec<PathBuf> = match std::fs::read_dir(spool) {
-        Ok(rd) => rd
-            .flatten()
-            .map(|e| e.path())
-            .filter(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| !n.starts_with('.')))
-            .collect(),
+        Ok(rd) => rd.flatten().map(|e| e.path()).filter(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| !n.starts_with('.'))).collect(),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Vec::new(),
         Err(e) => return Err(e.into()),
     };
@@ -70,11 +66,7 @@ pub async fn watch(client: &Client, cache: &str, spool: &Path, opts: push::Optio
         paths.dedup();
         // Paths garbage-collected since they were built cannot be pushed.
         paths.retain(|p| Path::new(p).exists());
-        let result = if paths.is_empty() {
-            Ok(())
-        } else {
-            push::push(client, cache, &paths, push::Options { closure: true, ..opts }).await
-        };
+        let result = if paths.is_empty() { Ok(()) } else { push::push(client, cache, &paths, push::Options { closure: true, ..opts }).await };
         match result {
             Ok(()) => {
                 for e in &entries {

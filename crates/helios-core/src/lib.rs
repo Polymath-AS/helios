@@ -187,9 +187,7 @@ unsafe extern "C" fn trampoline<F: FnMut(&[u8]) -> bool>(ctx: *mut c_void, buf: 
 pub fn dump_nar<F: FnMut(&[u8]) -> bool>(path: &Path, opts: &DumpOptions, mut write: F) -> Result<Digest, Error> {
     let cpath = CString::new(path.as_os_str().as_bytes()).map_err(|_| Error { code: HL_E_INVALID, errno: 0 })?;
     let mut out = sys::Digest::default();
-    let rc = unsafe {
-        sys::hl_nar_dump(cpath.as_ptr(), &opts.raw(), trampoline::<F>, &mut write as *mut F as *mut c_void, &mut out)
-    };
+    let rc = unsafe { sys::hl_nar_dump(cpath.as_ptr(), &opts.raw(), trampoline::<F>, &mut write as *mut F as *mut c_void, &mut out) };
     check(rc)?;
     Ok(out.into())
 }
@@ -451,10 +449,7 @@ mod tests {
         // RFC 4231 test case 2.
         let mac = hmac_sha256(b"Jefe", b"what do ya want for nothing?");
         assert_eq!(nix32_encode(&mac).len(), 52);
-        assert_eq!(
-            mac.iter().map(|b| format!("{b:02x}")).collect::<String>(),
-            "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
-        );
+        assert_eq!(mac.iter().map(|b| format!("{b:02x}")).collect::<String>(), "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843");
         assert_eq!(
             sha256(b"abc").iter().map(|b| format!("{b:02x}")).collect::<String>(),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
@@ -538,8 +533,8 @@ mod tests {
         let hashes = Command::new("nix-store").args(["-q", "--hash"]).args(&paths).output().unwrap();
         let hashes = String::from_utf8(hashes.stdout).unwrap();
         for (path, expected) in paths.iter().zip(hashes.lines()) {
-            let digest = dump_nar(Path::new(path), &DumpOptions { level: 1, threads: 0, size_hint: 0 }, |_| true)
-                .unwrap_or_else(|e| panic!("{path}: {e}"));
+            let digest =
+                dump_nar(Path::new(path), &DumpOptions { level: 1, threads: 0, size_hint: 0 }, |_| true).unwrap_or_else(|e| panic!("{path}: {e}"));
             assert_eq!(format!("sha256:{}", nix32_encode(&digest.nar_hash)), expected, "{path}");
         }
     }
