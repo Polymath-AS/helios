@@ -180,15 +180,19 @@ helios cache create main              # public: anyone can read
 helios cache create team --private    # reads need a token with `pull`
 helios cache list
 
+helios token create reader --caches team       # read-only (the default)
 helios token create ci --caches main --perms push --expires 90
-helios token create reader --caches team --perms pull
 helios token list
 helios token revoke <jti> "reason"    # takes effect immediately
 ```
 
 Admin commands use a server logged in with the admin secret; pass
 `--server <name>` to pick one. Tokens are HS256 JWTs scoped to cache names
-(or `*`) and to `push` and/or `pull`.
+(or `*`) and to `pull` and/or `push`. Tokens are read-only unless created
+with `push`, and `push` does not imply `pull`: a builder can upload to a
+private cache without being able to read it. A refused request says why,
+such as `token does not grant push on cache 'main'` or `token has been
+revoked`.
 
 For private caches, give Nix the token through netrc. Nix sends it as HTTP
 Basic auth, and the server reads the password:

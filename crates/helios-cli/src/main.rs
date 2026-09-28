@@ -91,11 +91,13 @@ enum CacheCmd {
 enum TokenCmd {
     Create {
         subject: String,
-        /// Comma-separated cache names, or "*".
-        #[arg(long, default_value = "*")]
+        /// Comma-separated cache names, or "*" for all of them.
+        #[arg(long)]
         caches: String,
-        /// Comma-separated: push, pull.
-        #[arg(long, default_value = "push")]
+        /// Comma-separated: pull, push. Read-only unless push is asked for;
+        /// push does not imply pull, so a builder can upload without reading
+        /// private caches.
+        #[arg(long, default_value = "pull")]
         perms: String,
         /// Lifetime in days (1-365).
         #[arg(long, default_value_t = 90)]

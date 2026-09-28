@@ -57,7 +57,9 @@ helios login admin "$URL" "$(cat "$WORK/admin")" >/dev/null
 helios cache create main >/dev/null
 helios cache create secret --private >/dev/null
 PUSH_TOKEN="$(helios token create ci --caches main,secret --perms push,pull 2>/dev/null | jq -r .token)"
-PULL_ONLY="$(helios token create reader --caches secret --perms pull 2>/dev/null | jq -r .token)"
+PULL_ONLY="$(helios token create reader --caches secret 2>/dev/null | jq -r .token)"
+PUSH_ONLY="$(helios token create builder --caches secret --perms push 2>/dev/null | jq -r .token)"
+check "tokens are read-only by default" '["pull"]' "$(helios token list | jq -c '.tokens[] | select(.subject=="reader") | .perms')"
 check "token issued" true "$([ -n "$PUSH_TOKEN" ] && echo true)"
 check "admin rejects push token" 403 "$(status -H "authorization: Bearer $PUSH_TOKEN" "$URL/_api/v2/admin/tokens")"
 
@@ -90,6 +92,8 @@ helios push secret "$TARGET" >/dev/null 2>&1
 check "private narinfo without auth" 401 "$(status "$URL/secret/$HASH.narinfo")"
 check "private narinfo with netrc-style basic auth" 200 "$(status -u "reader:$PULL_ONLY" "$URL/secret/$HASH.narinfo")"
 check "pull-only token cannot push" 403 "$(status -X POST -H "authorization: Bearer $PULL_ONLY" -H 'content-type: application/json' -d '{"hashes":[]}' "$URL/_api/v2/caches/secret/missing")"
+check "push-only token cannot read" 403 "$(status -u "builder:$PUSH_ONLY" "$URL/secret/$HASH.narinfo")"
+check "refusals say why" "token does not grant push on cache 'secret'" "$(curl -s -X POST -H "authorization: Bearer $PULL_ONLY" -H 'content-type: application/json' -d '{"hashes":[]}' "$URL/_api/v2/caches/secret/missing" | jq -r .error)"
 
 echo "=== abuse"
 check "garbage upload rejected" 400 "$(status -X PUT -H "authorization: Bearer $PUSH_TOKEN" --data-binary 'not a zstd stream' "$URL/_api/v2/caches/main/nar")"
@@ -101,6 +105,7 @@ check "publish without uploaded NAR" 409 "$(status -X POST -H "authorization: Be
 JTI="$(helios --server admin token list | jq -r '.tokens[] | select(.subject=="reader") | .jti')"
 helios --server admin token revoke "$JTI" "e2e" >/dev/null
 check "revocation is immediate" 401 "$(status -u "reader:$PULL_ONLY" "$URL/secret/$HASH.narinfo")"
+check "revoked token says so" "token has been revoked" "$(curl -s -u "reader:$PULL_ONLY" "$URL/secret/$HASH.narinfo" | jq -r .error)"
 
 echo
 echo "passed=$PASS failed=$FAIL"
