@@ -36,6 +36,8 @@ Every flag can also be set through its environment variable.
 | `--upload-grace-seconds` | `HELIOS_UPLOAD_GRACE_SECONDS` | `3600`: an unpublished upload is kept this long |
 | `--admin-socket` | `HELIOS_ADMIN_SOCKET` | unset: no maintenance API (see helios-daemon) |
 | `--caches` | `HELIOS_CACHES` | unset: caches to create at startup, such as `main,team:private`; a listed cache that exists takes the listed visibility, and unlisted caches are left alone |
+| `--compression-level` | `HELIOS_COMPRESSION_LEVEL` | `3`: zstd level clients use unless told otherwise (0: uncompressed) |
+| `--compression-window-log` | `HELIOS_COMPRESSION_WINDOW_LOG` | `27`: long-distance matching window clients use (0: the level's own) |
 
 Secret files must hold at least 16 bytes.
 
@@ -118,7 +120,7 @@ placed by hand). Without `domain`, the module runs only the server on
 | `nginx.acme` | `true` | set `false` for plain HTTP or your own certificates |
 | `openFirewall` | on with nginx | opens 80 and 443 |
 | `logLevel` | `info` | |
-| `settings.*` | | `narinfoCacheEntries`, `maxUploadBytes`, `gcIntervalHours`, `auditRetentionDays` |
+| `settings.*` | | `narinfoCacheEntries`, `maxUploadBytes`, `gcIntervalHours`, `auditRetentionDays`, `compressionLevel`, `compressionWindowLog` |
 | `caches.<name>.public` | `true` | caches created at startup; see below |
 
 `services.helios.daemon` (on by default) runs helios-daemon beside the
@@ -247,13 +249,15 @@ the case, and `--print` gives the `nix.settings` to use instead.
 ```bash
 helios push main /nix/store/...-hello                  # single paths
 helios push main --closure .#nixosConfigurations.host.config.system.build.toplevel
-helios push main --closure /run/current-system --jobs 8 --level 3
+helios push main --closure /run/current-system --jobs 8 --level 9
 ```
 
 The CLI serialises, zstd-compresses and hashes each NAR in one pass and
 streams it straight into the upload, without temp files. It checks every
-NAR hash against the Nix database. NARs the server already holds under any
-cache are reused, and paths are published dependencies-first, in batches.
+NAR hash against the Nix database. NARs the cache already holds, or that a
+public cache serves, are reused instead of uploaded; a NAR only another
+private cache holds is uploaded again, since reusing it would expose it.
+Paths are published dependencies-first, in batches.
 
 A NAR larger than `--chunk-size` (MiB, default 32) is uploaded in chunks of
 that size, so pushes work through proxies that cap request bodies, such as
@@ -261,6 +265,31 @@ Cloudflare (100 MB on the free plan) and Cloud Run (32 MiB). Each chunk is
 retried on its own after a network or server error, and the server's offset
 decides whether it has to be sent again. `--chunk-size 0` streams every NAR
 in one request.
+
+## Compression
+
+NARs are compressed with zstd at level 3 with long-distance matching over a
+128 MiB window (`--window-log 27`). On an 8.2 GiB NixOS system closure that
+stores 3357 MiB, against 3697 MiB for plain zstd level 2 and 3568 MiB for
+level 3: 9% and 6% smaller. It costs about half the single-core speed of
+level 2 (129 against 260 MB/s), but push compresses on every core, so even
+a two-core machine stays ahead of most uplinks, and fewer bytes means a
+faster push.
+
+| Level | Size vs level 2 | MB/s per core |
+|-------|-----------------|---------------|
+| 3, long window (default) | -9.2% | 129 |
+| 6, long window | -12.2% | 63 |
+| 9, long window | -14.3% | 33 |
+| 19, long window | -21.2% | 3 |
+
+`--level` (0-19; 0 uploads uncompressed) and `--window-log` (10-27, or 0
+for the level's own window) override the server's defaults, which are set
+with `HELIOS_COMPRESSION_LEVEL` and `HELIOS_COMPRESSION_WINDOW_LOG`; clients
+without either flag use them. Every NAR is compressed with its exact size
+pledged to zstd, so the window never exceeds the NAR and a decoder allocates
+no more than the NAR needs. 27 is the largest window a stock Nix decoder
+accepts. `bench/compression.sh` reproduces the measurements on any closure.
 
 ## HTTP API
 
