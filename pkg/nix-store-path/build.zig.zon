@@ -1,0 +1,10 @@
+.{
+    .name = .nix_store_path,
+    .version = "0.1.0",
+    .fingerprint = 0xdcfce087c7a4494d,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .nix_base32 = .{ .path = "../nix-base32" },
+    },
+    .paths = .{ "build.zig", "build.zig.zon", "src" },
+}
