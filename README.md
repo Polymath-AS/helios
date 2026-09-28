@@ -1,87 +1,69 @@
 # Helios
 
-A Cloudflare-native Nix binary cache.
+A self-hosted Nix binary cache for a single server: a Rust HTTP server and
+CLI on top of a Zig core library for NAR serialisation, hashing,
+compression, narinfo and signing.
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/Polymath-AS/helios)
-## Workspace
+## Layout
 
 ```
-workers/cache/        Cloudflare Worker (main service)
-packages/cache-domain/  Shared types and input parsers
-apps/cli/             CLI for pushing store paths
-scripts/              smoke-test.sh
-```
-
-## Setup
-
-```bash
-nix develop # drops you into a shell with node, pnpm, wrangler
-pnpm install
+pkg/          Zig packages: nix-base32, nix-store-path, nix-archive,
+              nix-narinfo, nix-derivation, nix-flake-lock
+core/         libhelios: C ABI over pkg/*, built as a static library
+crates/       helios-core (Rust bindings), helios-server, helios-cli
+bench/        benchmarks against Cachix's Nix libraries and Nix C++
+scripts/      e2e.sh (end-to-end test), test-zig.sh (Zig unit tests)
 ```
 
 ## Develop
 
 ```bash
-pnpm dev   # runs the worker locally via wrangler
-pnpm check # type-check + tests across the workspace
+nix develop                  # zig, rust, zstd, pkg-config
+cargo build --release        # builds libhelios via zig automatically
+cargo test --release
+./scripts/test-zig.sh        # unit tests for every pkg/*
+./scripts/e2e.sh             # server + CLI + real `nix copy` substitution
 ```
 
-## Deploy
+`nix build` produces `helios` (CLI) and `helios-server`.
 
-See [docs.md](docs.md) for the full reference. Short version:
+## Run the server
 
 ```bash
-wrangler r2 bucket create helios-cache
-wrangler d1 create helios-cache
-# update database_id in workers/cache/wrangler.jsonc
-wrangler d1 migrations apply helios-cache --remote
-wrangler secret put JWT_SECRET
-wrangler secret put ADMIN_SECRET
-wrangler secret put SIGNING_PRIVATE_KEY
-wrangler secret put SIGNING_KEY_NAME
-pnpm deploy
+nix key generate-secret --key-name cache.example.com-1 > /var/lib/helios/signing.key
+openssl rand -hex 32 > /var/lib/helios/jwt.secret
+openssl rand -hex 32 > /var/lib/helios/admin.secret
+
+helios-server \
+  --listen 127.0.0.1:8080 \
+  --data-dir /var/lib/helios \
+  --signing-key-file /var/lib/helios/signing.key \
+  --jwt-secret-file /var/lib/helios/jwt.secret \
+  --admin-secret-file /var/lib/helios/admin.secret
+
+helios-server --print-public-key --signing-key-file /var/lib/helios/signing.key
 ```
 
-## Push store paths
-
-Build the CLI (or `nix run .` for one-off use):
+## Push and substitute
 
 ```bash
-nix build       # produces ./result/bin/helios
-```
+helios login admin https://cache.example.com "$(cat admin.secret)"
+helios cache create main
+helios token create ci --caches main --perms push,pull   # prints the token once
 
-Save credentials once:
-
-```bash
-helios login prod https://your-worker.workers.dev "$PUSH_TOKEN"
-```
-
-Push a single path:
-
-```bash
-helios push main /nix/store/abc...-hello
-```
-
-Push a full closure:
-
-```bash
+helios login ci https://cache.example.com "$TOKEN"
 helios push main --closure /run/current-system
 ```
 
-Push a flake output closure:
-
-```bash
-helios push main --closure .#nixosConfigurations.myhost.config.system.build.toplevel
-```
-
-See [docs.md](docs.md) for token management and parallelism options.
-
-## Use as a substituter
-
 ```nix
-# configuration.nix or flake
-nix.settings.substituters = [ "https://your-worker.workers.dev/main" ];
+nix.settings = {
+  substituters = [ "https://cache.example.com/main" ];
+  trusted-public-keys = [ "cache.example.com-1:..." ];  # from --print-public-key
+};
 ```
+
+See [docs.md](docs.md) for configuration, private caches, the HTTP API
+and deployment behind a reverse proxy.
 
 ## License
 
