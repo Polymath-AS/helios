@@ -22,14 +22,6 @@ impl ApiError {
         Self::new(StatusCode::NOT_FOUND, "not found")
     }
 
-    pub fn forbidden() -> Self {
-        Self::new(StatusCode::FORBIDDEN, "forbidden")
-    }
-
-    pub fn unauthorized() -> Self {
-        Self::new(StatusCode::UNAUTHORIZED, "unauthorized")
-    }
-
     pub fn internal(err: impl std::fmt::Display) -> Self {
         crate::log::error!("internal error: {err}");
         Self::new(StatusCode::INTERNAL_SERVER_ERROR, "internal error")

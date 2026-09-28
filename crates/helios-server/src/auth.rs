@@ -1,7 +1,7 @@
 //! HS256 API tokens and the admin bearer secret. Revocation is checked
 //! against the in-memory token table, so it takes effect immediately.
 
-use axum::http::{HeaderMap, header};
+use axum::http::{HeaderMap, StatusCode, header};
 use base64::Engine;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
@@ -35,6 +35,15 @@ pub struct Claims {
     pub perms: Vec<Perm>,
     pub iat: i64,
     pub exp: i64,
+}
+
+impl std::fmt::Display for Perm {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Perm::Pull => "pull",
+            Perm::Push => "push",
+        })
+    }
 }
 
 impl Claims {
@@ -108,6 +117,10 @@ fn credential(headers: &HeaderMap) -> Option<String> {
     None
 }
 
+fn unauthorized(message: &str) -> ApiError {
+    ApiError::new(StatusCode::UNAUTHORIZED, message)
+}
+
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     // Hash first so the comparison does not leak the secret's length.
     helios_core::ct_eq(&helios_core::sha256(a), &helios_core::sha256(b))
@@ -115,13 +128,17 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 
 impl AppState {
     fn token_claims(&self, headers: &HeaderMap) -> Result<Claims, ApiError> {
-        let secret = self.cfg.jwt_secret.as_deref().ok_or_else(ApiError::forbidden)?;
-        let token = credential(headers).ok_or_else(ApiError::unauthorized)?;
+        let secret = self.cfg.jwt_secret.as_deref().ok_or_else(|| ApiError::new(StatusCode::FORBIDDEN, "token auth is not configured"))?;
+        let token = credential(headers).ok_or_else(|| unauthorized("a token is required"))?;
         let now = crate::db::now();
-        let claims = verify(&token, secret, now).ok_or_else(ApiError::unauthorized)?;
+        // Say why a token is refused: its holder already knows its claims,
+        // and a bare "unauthorized" leaves them guessing.
+        let claims = verify(&token, secret, now).ok_or_else(|| unauthorized("invalid or expired token"))?;
         match self.tokens.rd().get(claims.jti.as_str()) {
-            Some(t) if !t.revoked && t.expires_at > now => Ok(claims),
-            _ => Err(ApiError::unauthorized()),
+            Some(t) if t.revoked => Err(unauthorized("token has been revoked")),
+            Some(t) if t.expires_at > now => Ok(claims),
+            Some(_) => Err(unauthorized("token has expired")),
+            None => Err(unauthorized("token was not issued by this server")),
         }
     }
 
@@ -129,7 +146,7 @@ impl AppState {
     pub fn authorize(&self, headers: &HeaderMap, cache: &str, perm: Perm) -> Result<Identity, ApiError> {
         let claims = self.token_claims(headers)?;
         if !claims.allows(cache, perm) {
-            return Err(ApiError::forbidden());
+            return Err(ApiError::new(StatusCode::FORBIDDEN, format!("token does not grant {perm} on cache '{cache}'")));
         }
         Ok(Identity::Token(claims))
     }
@@ -143,10 +160,10 @@ impl AppState {
     }
 
     pub fn authorize_admin(&self, headers: &HeaderMap) -> Result<Identity, ApiError> {
-        let secret = self.cfg.admin_secret.as_deref().ok_or_else(ApiError::forbidden)?;
-        let given = credential(headers).ok_or_else(ApiError::unauthorized)?;
+        let secret = self.cfg.admin_secret.as_deref().ok_or_else(|| ApiError::new(StatusCode::FORBIDDEN, "the admin API is not configured"))?;
+        let given = credential(headers).ok_or_else(|| unauthorized("the admin secret is required"))?;
         if !constant_time_eq(given.as_bytes(), secret) {
-            return Err(ApiError::forbidden());
+            return Err(ApiError::new(StatusCode::FORBIDDEN, "the admin API takes the admin secret, not a cache token"));
         }
         Ok(Identity::Admin)
     }
