@@ -40,16 +40,43 @@ fn full(p: &str) -> String {
     if p.starts_with('/') { p.to_owned() } else { format!("{STORE_DIR}{p}") }
 }
 
+/// Installables beyond this many go to Nix on stdin rather than argv,
+/// which the kernel caps (E2BIG).
+const MAX_ARGS: usize = 1_000;
+
+/// Runs `cmd` with `installables` as arguments, or on stdin (`--stdin`)
+/// when there are too many for one command line.
+async fn output(mut cmd: Command, installables: &[String]) -> std::io::Result<std::process::Output> {
+    use tokio::io::AsyncWriteExt;
+    cmd.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+    if installables.len() <= MAX_ARGS {
+        return cmd.arg("--").args(installables).output().await;
+    }
+    let mut child = cmd.arg("--stdin").stdin(std::process::Stdio::piped()).spawn()?;
+    let mut stdin = child.stdin.take().expect("stdin is piped");
+    let input = installables.join("\n") + "\n";
+    // Feed stdin while collecting the output, or a full pipe deadlocks both.
+    let (written, out) = futures_util::future::join(
+        async move {
+            let r = stdin.write_all(input.as_bytes()).await;
+            drop(stdin);
+            r
+        },
+        child.wait_with_output(),
+    )
+    .await;
+    let out = out?;
+    // Nix closes the pipe early when it fails; its stderr says why.
+    if out.status.success() {
+        written?;
+    }
+    Ok(out)
+}
+
 async fn run(args: &[&str], installables: &[String]) -> anyhow::Result<std::process::Output> {
-    Command::new("nix")
-        .args(["--extra-experimental-features", "nix-command flakes", "path-info"])
-        .args(args)
-        .arg("--")
-        .args(installables)
-        .stderr(std::process::Stdio::piped())
-        .output()
-        .await
-        .context("running nix path-info (is nix on PATH?)")
+    let mut cmd = Command::new("nix");
+    cmd.args(["--extra-experimental-features", "nix-command flakes", "path-info"]).args(args);
+    output(cmd, installables).await.context("running nix path-info (is nix on PATH?)")
 }
 
 pub async fn path_infos(installables: &[String], closure: bool) -> anyhow::Result<Vec<PathInfo>> {
@@ -150,15 +177,9 @@ pub async fn build_traces(derivers: &[String]) -> anyhow::Result<Vec<serde_json:
     let mut out = None;
     // `store build-trace` is the current name; `realisation` the old one.
     for sub in [&["store", "build-trace", "info"][..], &["realisation", "info"][..]] {
-        let o = Command::new("nix")
-            .args(["--extra-experimental-features", "nix-command ca-derivations"])
-            .args(sub)
-            .args(["--json", "--"])
-            .args(&outputs)
-            .stderr(std::process::Stdio::piped())
-            .output()
-            .await
-            .context("running nix store build-trace info")?;
+        let mut cmd = Command::new("nix");
+        cmd.args(["--extra-experimental-features", "nix-command ca-derivations"]).args(sub).arg("--json");
+        let o = output(cmd, &outputs).await.context("running nix store build-trace info")?;
         if o.status.success() {
             out = Some(o);
             break;
@@ -200,5 +221,19 @@ mod tests {
         assert_eq!(parse(obj).unwrap()[0].hash, "a".repeat(32));
         let arr = br#"[{"path":"/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-y","narHash":"sha256:x","narSize":8,"references":["/nix/store/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb-y"]}]"#;
         assert_eq!(parse(arr).unwrap()[0].references.len(), 1);
+    }
+
+    #[test]
+    fn many_installables_go_on_stdin() {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let run = |n: usize| {
+            let mut cmd = Command::new("sh");
+            cmd.args(["-c", r#"printf '%s ' "$@"; cat | wc -l"#, "sh"]);
+            let args: Vec<String> = (0..n).map(|i| format!("p{i}")).collect();
+            let out = rt.block_on(output(cmd, &args)).unwrap();
+            String::from_utf8(out.stdout).unwrap()
+        };
+        assert_eq!(run(2).split_whitespace().collect::<Vec<_>>(), ["--", "p0", "p1", "0"]);
+        assert_eq!(run(MAX_ARGS + 1).split_whitespace().collect::<Vec<_>>(), ["--stdin", &(MAX_ARGS + 1).to_string()]);
     }
 }

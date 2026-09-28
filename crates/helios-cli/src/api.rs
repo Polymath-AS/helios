@@ -80,8 +80,9 @@ impl Client {
         Ok(r.known)
     }
 
-    pub async fn upload(&self, cache: &str, body: Body) -> anyhow::Result<Uploaded> {
-        self.call(Method::PUT, &format!("/caches/{cache}/nar?compression=zstd"), Some("application/x-nix-nar"), body).await
+    /// `compression` is the narinfo name: `zstd`, or `none` for a raw NAR.
+    pub async fn upload(&self, cache: &str, compression: &str, body: Body) -> anyhow::Result<Uploaded> {
+        self.call(Method::PUT, &format!("/caches/{cache}/nar?compression={compression}"), Some("application/x-nix-nar"), body).await
     }
 
     pub async fn publish_build_traces(&self, cache: &str, entries: &[Value]) -> anyhow::Result<Value> {
@@ -106,12 +107,13 @@ impl Client {
     }
 
     /// Starts a chunked upload; returns its id.
-    pub async fn upload_create(&self, cache: &str) -> anyhow::Result<String> {
+    pub async fn upload_create(&self, cache: &str, compression: &str) -> anyhow::Result<String> {
         #[derive(Deserialize)]
         struct R {
             id: String,
         }
-        let r: R = self.call(Method::POST, &format!("/caches/{cache}/uploads?compression=zstd"), None, transport::full(Bytes::new())).await?;
+        let r: R =
+            self.call(Method::POST, &format!("/caches/{cache}/uploads?compression={compression}"), None, transport::full(Bytes::new())).await?;
         Ok(r.id)
     }
 

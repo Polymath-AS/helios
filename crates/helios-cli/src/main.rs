@@ -45,9 +45,14 @@ enum Command {
         /// Parallel uploads.
         #[arg(long, short = 'j', default_value_t = 8)]
         jobs: usize,
-        /// zstd compression level (1-19).
-        #[arg(long, default_value_t = 3, value_parser = clap::value_parser!(i32).range(1..=19))]
-        level: i32,
+        /// zstd level, 1-19, or 0 to upload uncompressed. Default: the
+        /// server's (3 unless configured).
+        #[arg(long, value_parser = clap::value_parser!(i32).range(0..=19))]
+        level: Option<i32>,
+        /// zstd window for long-distance matching, as a power of two
+        /// (10-27), or 0 for the level's own. Default: the server's (27).
+        #[arg(long, value_parser = parse_window_log)]
+        window_log: Option<i32>,
         /// Pin the given paths afterwards, so auto-GC keeps them and their
         /// closures.
         #[arg(long)]
@@ -67,9 +72,14 @@ enum Command {
         /// Parallel uploads.
         #[arg(long, short = 'j', default_value_t = 8)]
         jobs: usize,
-        /// zstd compression level (1-19).
-        #[arg(long, default_value_t = 3, value_parser = clap::value_parser!(i32).range(1..=19))]
-        level: i32,
+        /// zstd level, 1-19, or 0 to upload uncompressed. Default: the
+        /// server's (3 unless configured).
+        #[arg(long, value_parser = clap::value_parser!(i32).range(0..=19))]
+        level: Option<i32>,
+        /// zstd window for long-distance matching, as a power of two
+        /// (10-27), or 0 for the level's own. Default: the server's (27).
+        #[arg(long, value_parser = parse_window_log)]
+        window_log: Option<i32>,
         /// Upload NARs in chunks of this many MiB, for proxies that cap
         /// request bodies (Cloudflare, Cloud Run). 0 sends each NAR in one
         /// request; so does a NAR that fits in one chunk.
@@ -176,15 +186,17 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                 Some(file) => std::fs::read_to_string(file).with_context(|| format!("reading {}", file.display()))?,
                 None => std::env::var("HELIOS_TOKEN").context("--url needs --token-file or HELIOS_TOKEN")?,
             };
-            config::Server { server: url.clone(), token: token.trim().to_owned() }
+            config::Server { server: url.trim_end_matches('/').to_owned(), token: token.trim().to_owned() }
         }
         None => config::server(cli.server.as_deref())?,
     };
     let client = api::Client::new(&server)?;
     match cli.command {
         Command::Login { .. } | Command::QueuePaths { .. } => unreachable!(),
-        Command::Push { cache, installables, closure, jobs, level, chunk_size, pin } => {
-            push::push(&client, &cache, &installables, push::Options { jobs, level, closure, chunk_size: (chunk_size << 20) as usize }).await?;
+        Command::Push { cache, installables, closure, jobs, level, window_log, chunk_size, pin } => {
+            let (level, window_log) = compression(&client, &cache, level, window_log).await;
+            let opts = push::Options { jobs, level, window_log, closure, chunk_size: (chunk_size << 20) as usize };
+            push::push(&client, &cache, &installables, opts).await?;
             if pin {
                 pin_paths(&client, &cache, &installables).await?;
             }
@@ -201,8 +213,10 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
             let plan = substituter::plan(&client, &server, &cache).await?;
             if print { plan.print() } else { plan.apply()? }
         }
-        Command::WatchStore { cache, spool, jobs, level, chunk_size } => {
-            watch::watch(&client, &cache, &spool, push::Options { jobs, level, closure: true, chunk_size: (chunk_size << 20) as usize }).await?;
+        Command::WatchStore { cache, spool, jobs, level, window_log, chunk_size } => {
+            let (level, window_log) = compression(&client, &cache, level, window_log).await;
+            let opts = push::Options { jobs, level, window_log, closure: true, chunk_size: (chunk_size << 20) as usize };
+            watch::watch(&client, &cache, &spool, opts).await?;
         }
         Command::Cache(CacheCmd::Create { name, private }) => {
             print(&client.admin_post("/admin/caches", json!({ "name": name, "public": !private })).await?);
@@ -256,4 +270,31 @@ async fn pin_paths(client: &api::Client, cache: &str, args: &[String]) -> anyhow
     let r = client.pin(cache, &paths).await?;
     tracing::info!("pinned {} paths in '{cache}' ({} already were)", r["pinned"], r["alreadyPinned"]);
     Ok(())
+}
+
+fn parse_window_log(s: &str) -> Result<i32, String> {
+    match s.parse::<i32>() {
+        Ok(n) if n == 0 || (10..=27).contains(&n) => Ok(n),
+        _ => Err("expected 0, or 10-27 (27, a 128 MiB window, is the largest a stock Nix decoder accepts)".into()),
+    }
+}
+
+/// The level and window to compress with: what was asked for, else the
+/// server's defaults for the cache, else level 3 with a 2^27 window.
+async fn compression(client: &api::Client, cache: &str, level: Option<i32>, window_log: Option<i32>) -> (i32, i32) {
+    let server = if level.is_none() || window_log.is_none() {
+        match client.cache_info(cache).await {
+            Ok(info) => info.compression,
+            Err(e) => {
+                tracing::debug!("no compression defaults from the server: {e:#}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let level = level.or(server.map(|c| c.level)).unwrap_or(3);
+    // An uncompressed upload has no window.
+    let window_log = if level == 0 { 0 } else { window_log.or(server.map(|c| c.window_log)).unwrap_or(27) };
+    (level, window_log)
 }

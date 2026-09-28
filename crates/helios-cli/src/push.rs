@@ -23,6 +23,8 @@ const PUBLISH_BATCH: usize = 1_000;
 pub struct Options {
     pub jobs: usize,
     pub level: i32,
+    /// zstd window for long-distance matching (10-27), or 0 for the level's.
+    pub window_log: i32,
     pub closure: bool,
     /// Bytes per chunked-upload request; 0 streams each NAR in one request.
     pub chunk_size: usize,
@@ -85,6 +87,7 @@ fn produce(path: &str, opts: DumpOptions, tx: mpsc::Sender<Result<Bytes, std::io
 async fn send_chunked(
     client: &Client,
     cache: &str,
+    compression: &str,
     rx: &mut mpsc::Receiver<Result<Bytes, std::io::Error>>,
     chunk_size: usize,
 ) -> anyhow::Result<Uploaded> {
@@ -101,13 +104,13 @@ async fn send_chunked(
                 None => true,
             };
             if done && session.is_none() && buf.len() <= chunk_size {
-                return client.upload(cache, crate::transport::full(buf.split().freeze())).await;
+                return client.upload(cache, compression, crate::transport::full(buf.split().freeze())).await;
             }
             while buf.len() >= chunk_size || (done && !buf.is_empty()) {
                 let chunk = buf.split_to(buf.len().min(chunk_size)).freeze();
                 let id = match &session {
                     Some(id) => id.clone(),
-                    None => session.insert(client.upload_create(cache).await?).clone(),
+                    None => session.insert(client.upload_create(cache, compression).await?).clone(),
                 };
                 offset = client.upload_append(cache, &id, offset, chunk).await?;
             }
@@ -125,21 +128,32 @@ async fn send_chunked(
 }
 
 async fn upload_one(client: &Client, cache: &str, info: &PathInfo, opts: DumpOptions, chunk_size: usize) -> anyhow::Result<u64> {
+    let compression = if opts.level == 0 { "none" } else { "zstd" };
     let (tx, mut rx) = mpsc::channel(8);
     let path = info.path.clone();
-    let producer = tokio::task::spawn_blocking(move || produce(&path, opts, tx));
+    // Also reports whether the upload had already stopped reading, which
+    // tells a cause (local serialisation failure) from an effect.
+    let producer = tokio::task::spawn_blocking(move || {
+        let digest = produce(&path, opts, tx.clone());
+        (digest, tx.is_closed())
+    });
     let uploaded = if chunk_size == 0 {
         let chunks = futures_util::stream::unfold(rx, |mut rx| async move { rx.recv().await.map(|c| (c, rx)) });
-        client.upload(cache, crate::transport::stream(chunks)).await
+        client.upload(cache, compression, crate::transport::stream(chunks)).await
     } else {
-        let uploaded = send_chunked(client, cache, &mut rx, chunk_size).await;
+        let uploaded = send_chunked(client, cache, compression, &mut rx, chunk_size).await;
         drop(rx); // Stops the producer if the upload gave up early.
         uploaded
     };
-    let digest = producer.await?;
-    // An upload failure aborts the producer; report the upload's error.
-    let uploaded = uploaded?;
-    let digest = digest?;
+    let (digest, upload_stopped) = producer.await?;
+    // A failed upload aborts the producer, so then the upload's error is
+    // the cause; a failed producer cuts the stream short, and the server's
+    // complaint about it is only the effect.
+    let (uploaded, digest) = match (uploaded, digest) {
+        (Err(e), Err(_)) if upload_stopped => return Err(e),
+        (_, Err(e)) => return Err(e),
+        (uploaded, Ok(digest)) => (uploaded?, digest),
+    };
 
     let ours = format!("sha256:{}", helios_core::nix32_encode(&digest.nar_hash));
     if parse_sha256(&info.nar_hash) != Some(digest.nar_hash) {
@@ -151,14 +165,15 @@ async fn upload_one(client: &Client, cache: &str, info: &PathInfo, opts: DumpOpt
     Ok(uploaded.file_size)
 }
 
-async fn upload_all(client: &Client, cache: &str, paths: &[&PathInfo], opts: &Options) -> anyhow::Result<u64> {
+/// Uploads `paths`, returning the bytes sent and the paths that failed.
+async fn upload_all(client: &Client, cache: &str, paths: &[&PathInfo], opts: &Options) -> (u64, HashSet<String>) {
     let total = paths.len();
     let threads = (std::thread::available_parallelism().map_or(4, |n| n.get()) / opts.jobs.max(1)).max(1) as i32;
     let mut done = 0usize;
     let mut bytes = 0u64;
-    let mut failures = Vec::new();
+    let mut failures = HashSet::new();
     let mut results = futures_util::stream::iter(paths.iter().map(|info| async move {
-        let dump = DumpOptions { level: opts.level, threads, size_hint: info.nar_size };
+        let dump = DumpOptions { level: opts.level, threads, nar_size: info.nar_size, window_log: opts.window_log };
         let started = Instant::now();
         (info, upload_one(client, cache, info, dump, opts.chunk_size).await, started.elapsed())
     }))
@@ -172,14 +187,26 @@ async fn upload_all(client: &Client, cache: &str, paths: &[&PathInfo], opts: &Op
             }
             Err(e) => {
                 tracing::error!("[{done}/{total}] {} failed: {e:#}", name(&info.path));
-                failures.push(info.path.clone());
+                failures.insert(info.path.clone());
             }
         }
     }
-    if !failures.is_empty() {
-        bail!("{} of {total} uploads failed", failures.len());
+    (bytes, failures)
+}
+
+/// Drops from `batch` the paths in `bad` and those referring to one,
+/// adding the latter to `bad`. `batch` comes dependencies first, so one
+/// pass reaches every dependent, here and in later batches.
+fn without_bad<'a>(batch: &'a [PathInfo], bad: &mut HashSet<String>) -> Vec<&'a PathInfo> {
+    let mut kept = Vec::with_capacity(batch.len());
+    for info in batch {
+        if bad.contains(&info.path) || info.references.iter().any(|r| *r != info.path && bad.contains(r)) {
+            bad.insert(info.path.clone());
+        } else {
+            kept.push(info);
+        }
     }
-    Ok(bytes)
+    kept
 }
 
 pub async fn push(client: &Client, cache: &str, installables: &[String], opts: Options) -> anyhow::Result<()> {
@@ -188,10 +215,15 @@ pub async fn push(client: &Client, cache: &str, installables: &[String], opts: O
     // or Nix cannot tell which paths a CA derivation produced.
     let derivers: Vec<String> =
         infos.iter().filter(|i| i.ca.is_some()).filter_map(|i| i.deriver.clone()).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
-    let paths: HashSet<String> = infos.iter().map(|i| i.path.clone()).collect();
-    push_infos(client, cache, infos, opts).await?;
+    let mut paths: HashSet<String> = infos.iter().map(|i| i.path.clone()).collect();
+    let total = paths.len();
+    let unpublished = push_infos(client, cache, infos, opts).await?;
+    paths.retain(|p| !unpublished.contains(p));
     if !derivers.is_empty() {
         push_build_traces(client, cache, &derivers, &paths).await?;
+    }
+    if !unpublished.is_empty() {
+        bail!("{} of {total} paths not pushed: they, or paths they refer to, failed to upload", unpublished.len());
     }
     Ok(())
 }
@@ -225,7 +257,10 @@ async fn push_build_traces(client: &Client, cache: &str, derivers: &[String], pu
     Ok(())
 }
 
-async fn push_infos(client: &Client, cache: &str, infos: Vec<PathInfo>, opts: Options) -> anyhow::Result<()> {
+/// Uploads and publishes what is missing. A path that fails to upload is
+/// left out with everything referring to it, and the rest is published;
+/// returns the paths left out.
+async fn push_infos(client: &Client, cache: &str, infos: Vec<PathInfo>, opts: Options) -> anyhow::Result<HashSet<String>> {
     let started = Instant::now();
     let total = infos.len();
 
@@ -237,7 +272,7 @@ async fn push_infos(client: &Client, cache: &str, infos: Vec<PathInfo>, opts: Op
     let todo: Vec<PathInfo> = infos.into_iter().filter(|i| missing.contains(&i.hash)).collect();
     if todo.is_empty() {
         tracing::info!("all {total} paths already in '{cache}'");
-        return Ok(());
+        return Ok(HashSet::new());
     }
 
     // Paths whose NAR the server already holds (from any cache) skip the upload.
@@ -248,23 +283,27 @@ async fn push_infos(client: &Client, cache: &str, infos: Vec<PathInfo>, opts: Op
     }
     let uploads: Vec<&PathInfo> = todo.iter().filter(|i| !known.contains(&i.nar_hash)).collect();
     tracing::info!("{total} paths, {} missing from '{cache}': uploading {}, reusing {} NARs", todo.len(), uploads.len(), todo.len() - uploads.len());
-    let mut uploaded_bytes = upload_all(client, cache, &uploads, &opts).await?;
+    let (mut uploaded_bytes, mut bad) = upload_all(client, cache, &uploads, &opts).await;
 
     let ordered = nix::topo_order(todo);
     let mut published = 0u64;
     for batch in ordered.chunks(PUBLISH_BATCH) {
-        let specs: Vec<PathSpec> = batch
-            .iter()
-            .map(|i| PathSpec {
-                store_path: i.path.clone(),
-                nar_hash: i.nar_hash.clone(),
-                nar_size: i.nar_size,
-                references: i.references.clone(),
-                deriver: i.deriver.clone(),
-            })
-            .collect();
         let mut retried = false;
         loop {
+            let kept = without_bad(batch, &mut bad);
+            if kept.is_empty() {
+                break;
+            }
+            let specs: Vec<PathSpec> = kept
+                .iter()
+                .map(|i| PathSpec {
+                    store_path: i.path.clone(),
+                    nar_hash: i.nar_hash.clone(),
+                    nar_size: i.nar_size,
+                    references: i.references.clone(),
+                    deriver: i.deriver.clone(),
+                })
+                .collect();
             match client.publish(cache, &specs).await? {
                 Publish::Done { published: n } => {
                     published += n;
@@ -274,10 +313,21 @@ async fn push_infos(client: &Client, cache: &str, infos: Vec<PathInfo>, opts: Op
                 Publish::MissingNars(paths) if !retried => {
                     retried = true;
                     let wanted: HashSet<&str> = paths.iter().map(String::as_str).collect();
-                    let redo: Vec<&PathInfo> = batch.iter().filter(|i| wanted.contains(i.path.as_str())).collect();
-                    uploaded_bytes += upload_all(client, cache, &redo, &opts).await?;
+                    let redo: Vec<&PathInfo> = kept.into_iter().filter(|i| wanted.contains(i.path.as_str())).collect();
+                    let (bytes, failed) = upload_all(client, cache, &redo, &opts).await;
+                    uploaded_bytes += bytes;
+                    bad.extend(failed);
                 }
-                Publish::MissingNars(paths) => bail!("server still lacks NARs for {} paths", paths.len()),
+                Publish::MissingNars(paths) => {
+                    let wanted: HashSet<String> = paths.into_iter().collect();
+                    let lacking: Vec<String> = kept.iter().filter(|i| wanted.contains(&i.path)).map(|i| i.path.clone()).collect();
+                    // Each round drops at least one path, so this ends.
+                    if lacking.is_empty() {
+                        bail!("server lacks NARs for {} paths not in this batch", wanted.len());
+                    }
+                    tracing::error!("server still lacks NARs for {} paths; leaving them out", lacking.len());
+                    bad.extend(lacking);
+                }
             }
         }
     }
@@ -288,5 +338,33 @@ async fn push_infos(client: &Client, cache: &str, infos: Vec<PathInfo>, opts: Op
         human(uploaded_bytes),
         human((uploaded_bytes as f64 / secs.max(1e-3)) as u64)
     );
-    Ok(())
+    Ok(bad)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn info(name: &str, refs: &[&str]) -> PathInfo {
+        PathInfo {
+            path: name.to_owned(),
+            hash: String::new(),
+            nar_hash: String::new(),
+            nar_size: 0,
+            references: refs.iter().map(|r| (*r).to_owned()).collect(),
+            deriver: None,
+            ca: None,
+        }
+    }
+
+    #[test]
+    fn failed_paths_hold_back_their_dependents() {
+        let first = [info("libc", &["libc"]), info("lib", &["libc"]), info("other", &[])];
+        let second = [info("app", &["lib", "other"]), info("tool", &["other"])];
+        let mut bad: HashSet<String> = ["lib".to_owned()].into();
+        let names = |v: Vec<&PathInfo>| v.into_iter().map(|i| i.path.clone()).collect::<Vec<_>>();
+        assert_eq!(names(without_bad(&first, &mut bad)), ["libc", "other"]);
+        assert_eq!(names(without_bad(&second, &mut bad)), ["tool"]);
+        assert!(bad.contains("app"));
+    }
 }

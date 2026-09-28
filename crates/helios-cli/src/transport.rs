@@ -8,6 +8,7 @@ use std::net::IpAddr;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::task::{Context, Poll};
+use std::time::Duration;
 
 use anyhow::{Context as _, bail};
 use bytes::Bytes;
@@ -17,7 +18,8 @@ use http_body_util::{BodyExt, Full, StreamBody};
 use hyper::body::{Frame, Incoming};
 use hyper::client::conn::http1::SendRequest;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-use tokio::net::TcpStream;
+use tokio::net::{TcpSocket, TcpStream};
+use tokio::time::{Instant, Sleep};
 
 pub type Body = UnsyncBoxBody<Bytes, io::Error>;
 
@@ -118,6 +120,70 @@ impl<T: AsyncWrite + Unpin> hyper::rt::Write for Io<T> {
     }
 }
 
+/// Connecting, including the TLS and HTTP handshakes.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+/// Connecting to one of the host's addresses, before trying the next.
+const ADDRESS_TIMEOUT: Duration = Duration::from_secs(10);
+/// A connection that moves no bytes either way for this long is dead (a
+/// half-open connection otherwise hangs forever). Large uploads are fine:
+/// they keep making progress.
+const IDLE_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// A stream that fails reads and writes once it has made no progress in
+/// either direction for `limit`.
+struct Idle<T> {
+    inner: T,
+    limit: Duration,
+    timer: Pin<Box<Sleep>>,
+    last: Instant,
+}
+
+impl<T> Idle<T> {
+    fn new(inner: T, limit: Duration) -> Self {
+        Self { inner, limit, timer: Box::pin(tokio::time::sleep(limit)), last: Instant::now() }
+    }
+
+    /// Records progress, or checks the deadline when there was none.
+    fn track<R>(&mut self, cx: &mut Context<'_>, poll: Poll<io::Result<R>>) -> Poll<io::Result<R>> {
+        if poll.is_ready() {
+            self.last = Instant::now();
+            return poll;
+        }
+        loop {
+            if self.timer.as_mut().poll(cx).is_pending() {
+                return Poll::Pending;
+            }
+            let deadline = self.last + self.limit;
+            if Instant::now() >= deadline {
+                return Poll::Ready(Err(io::Error::new(io::ErrorKind::TimedOut, format!("connection idle for {:?}", self.limit))));
+            }
+            self.timer.as_mut().reset(deadline);
+        }
+    }
+}
+
+impl<T: AsyncRead + Unpin> AsyncRead for Idle<T> {
+    fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut ReadBuf<'_>) -> Poll<io::Result<()>> {
+        let poll = Pin::new(&mut self.inner).poll_read(cx, buf);
+        self.track(cx, poll)
+    }
+}
+
+impl<T: AsyncWrite + Unpin> AsyncWrite for Idle<T> {
+    fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<io::Result<usize>> {
+        let poll = Pin::new(&mut self.inner).poll_write(cx, buf);
+        self.track(cx, poll)
+    }
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        let poll = Pin::new(&mut self.inner).poll_flush(cx);
+        self.track(cx, poll)
+    }
+    fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+        let poll = Pin::new(&mut self.inner).poll_shutdown(cx);
+        self.track(cx, poll)
+    }
+}
+
 pub struct Client {
     target: Target,
     host_header: HeaderValue,
@@ -139,11 +205,32 @@ impl Client {
         format!("{}{p}", self.target.prefix)
     }
 
+    /// TCP to the first of the host's addresses that answers, with
+    /// keepalive on so the kernel notices a peer that went away.
+    async fn tcp(&self) -> io::Result<TcpStream> {
+        let mut last = io::Error::new(io::ErrorKind::NotFound, "host has no addresses");
+        for addr in tokio::net::lookup_host((self.target.host.as_str(), self.target.port)).await? {
+            let socket = if addr.is_ipv4() { TcpSocket::new_v4() } else { TcpSocket::new_v6() }?;
+            socket.set_keepalive(true)?;
+            socket.set_nodelay(true)?;
+            match tokio::time::timeout(ADDRESS_TIMEOUT, socket.connect(addr)).await {
+                Ok(Ok(tcp)) => return Ok(tcp),
+                Ok(Err(e)) => last = e,
+                Err(_) => last = io::Error::new(io::ErrorKind::TimedOut, format!("{addr} did not answer in {ADDRESS_TIMEOUT:?}")),
+            }
+        }
+        Err(last)
+    }
+
     async fn connect(&self) -> anyhow::Result<SendRequest<Body>> {
-        let tcp = TcpStream::connect((self.target.host.as_str(), self.target.port))
-            .await
-            .with_context(|| format!("connecting to {}:{}", self.target.host, self.target.port))?;
-        tcp.set_nodelay(true)?;
+        let connected = tokio::time::timeout(CONNECT_TIMEOUT, self.handshake()).await;
+        connected
+            .unwrap_or_else(|_| Err(anyhow::anyhow!("timed out after {CONNECT_TIMEOUT:?}")))
+            .with_context(|| format!("connecting to {}:{}", self.target.host, self.target.port))
+    }
+
+    async fn handshake(&self) -> anyhow::Result<SendRequest<Body>> {
+        let tcp = Idle::new(self.tcp().await?, IDLE_TIMEOUT);
         let sender = match &self.tls {
             None => {
                 let (sender, conn) = hyper::client::conn::http1::handshake(Io(tcp)).await?;
@@ -210,7 +297,33 @@ impl Client {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_base;
+    use super::{Idle, parse_base};
+    use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    #[test]
+    fn idle_connections_time_out() {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_time().build().unwrap();
+        rt.block_on(async {
+            let (a, mut b) = tokio::io::duplex(64);
+            let mut a = Idle::new(a, Duration::from_millis(100));
+            let writer = tokio::spawn(async move {
+                for _ in 0..3 {
+                    tokio::time::sleep(Duration::from_millis(60)).await;
+                    b.write_all(b"x").await.unwrap();
+                }
+                b
+            });
+            // Progress keeps it alive past the limit.
+            let mut buf = [0u8; 4];
+            for _ in 0..3 {
+                assert_eq!(a.read(&mut buf).await.unwrap(), 1);
+            }
+            let _open = writer.await.unwrap();
+            let err = a.read(&mut buf).await.unwrap_err();
+            assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
+        });
+    }
 
     #[test]
     fn parses_base_urls() {
