@@ -1,0 +1,15 @@
+# Reference harness: cachix/nix-flake-lock, pinned. Not part of the workspace.
+[package]
+name = "flake-lock-rs"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+nix-flake-lock = { git = "https://github.com/cachix/nix-flake-lock", rev = "61c13ac" }
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+
+[workspace]
