@@ -22,6 +22,64 @@ let
   dataDir = cfg.dataDir;
   defaultDataDir = "/var/lib/helios";
   secret = name: file: optional (file != null) "${name}:${file}";
+
+  # The maintenance socket lives in a setgid directory, so it belongs to
+  # group helios-admin: the daemon can reach it, nginx (group helios) cannot.
+  adminDir = "/run/helios-admin";
+  adminSocket = "${adminDir}/admin.sock";
+
+  daemonArgs = lib.cli.toCommandLineShellGNU { } (
+    {
+      socket = adminSocket;
+      data-dir = dataDir;
+      gc-interval = cfg.daemon.gcInterval;
+      scrub-interval = if cfg.daemon.scrub.interval == null then "0" else cfg.daemon.scrub.interval;
+      scrub-rate = cfg.daemon.scrub.rate;
+      checkpoint-interval = cfg.daemon.checkpointInterval;
+      optimize-interval = cfg.daemon.optimizeInterval;
+      backup-interval = if cfg.daemon.backup.interval == null then "0" else cfg.daemon.backup.interval;
+      backup-keep = cfg.daemon.backup.keep;
+      quota-high = cfg.daemon.quotaHigh;
+      quota-low = cfg.daemon.quotaLow;
+    }
+    // lib.optionalAttrs (cfg.daemon.quota != null) { quota = cfg.daemon.quota; }
+    // lib.optionalAttrs (cfg.daemon.minFree != null) { min-free = cfg.daemon.minFree; }
+    // lib.optionalAttrs (cfg.daemon.metrics.listen != null) { metrics-listen = cfg.daemon.metrics.listen; }
+  );
+
+  watchSpool = "/var/lib/helios-watch-store/spool";
+  # Runs as root inside the nix-daemon after every build; a failing
+  # post-build hook fails the build, so queueing problems are only logged.
+  queueHook = pkgs.writeShellScript "helios-queue-paths" ''
+    ${cfg.package}/bin/helios queue-paths --spool ${watchSpool} \
+      || echo "helios: could not queue $OUT_PATHS for pushing" >&2
+    exit 0
+  '';
+
+  hardening = {
+    NoNewPrivileges = true;
+    CapabilityBoundingSet = "";
+    AmbientCapabilities = "";
+    ProtectSystem = "strict";
+    ProtectHome = true;
+    PrivateTmp = true;
+    PrivateDevices = true;
+    ProtectKernelTunables = true;
+    ProtectKernelModules = true;
+    ProtectKernelLogs = true;
+    ProtectControlGroups = true;
+    ProtectClock = true;
+    ProtectHostname = true;
+    ProtectProc = "invisible";
+    ProcSubset = "pid";
+    RestrictNamespaces = true;
+    RestrictRealtime = true;
+    RestrictSUIDSGID = true;
+    LockPersonality = true;
+    MemoryDenyWriteExecute = true;
+    SystemCallArchitectures = "native";
+    SystemCallFilter = [ "@system-service" "~@privileged" ];
+  };
   credential = flag: name: file: optionalString (file != null) " ${flag} %d/${name}";
 in
 {
@@ -124,9 +182,106 @@ in
       defaultText = lib.literalExpression "config.services.helios.nginx.enable";
       description = "Open TCP 80 and 443.";
     };
+
+    daemon = {
+      enable = mkOption {
+        type = types.bool;
+        default = true;
+        description = ''
+          Run helios-daemon beside the server: WAL checkpoints, database
+          backups and an integrity scrub, plus auto-GC once a quota is set.
+        '';
+      };
+      quota = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        example = "500G";
+        description = "Keep stored NARs under this size by evicting least-recently-used paths. Null disables auto-GC by size.";
+      };
+      quotaHigh = mkOption {
+        type = types.float;
+        default = 0.9;
+        description = "Start evicting above this fraction of the quota.";
+      };
+      quotaLow = mkOption {
+        type = types.float;
+        default = 0.8;
+        description = "Evict down to this fraction of the quota.";
+      };
+      minFree = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        example = "20G";
+        description = "Also evict while the data filesystem has less free space than this.";
+      };
+      gcInterval = mkOption {
+        type = types.str;
+        default = "5m";
+      };
+      scrub = {
+        interval = mkOption {
+          type = types.nullOr types.str;
+          default = "7d";
+          description = "Time between full integrity scrubs; null disables.";
+        };
+        rate = mkOption {
+          type = types.str;
+          default = "64M";
+          description = "Scrub read rate per second; \"0\" is unlimited.";
+        };
+      };
+      checkpointInterval = mkOption {
+        type = types.str;
+        default = "15m";
+      };
+      optimizeInterval = mkOption {
+        type = types.str;
+        default = "1d";
+      };
+      backup = {
+        interval = mkOption {
+          type = types.nullOr types.str;
+          default = "1d";
+          description = "Time between database backups (to <dataDir>/backups); null disables.";
+        };
+        keep = mkOption {
+          type = types.ints.positive;
+          default = 7;
+        };
+      };
+      metrics.listen = mkOption {
+        type = types.nullOr types.str;
+        default = null;
+        example = "127.0.0.1:9120";
+        description = "Serve Prometheus metrics on this address.";
+      };
+    };
+
+    watchStore = {
+      enable = mkEnableOption "pushing every locally built path to a Helios cache (post-build hook)";
+      url = mkOption {
+        type = types.str;
+        example = "https://cache.example.com";
+        description = "Helios server to push to.";
+      };
+      cache = mkOption {
+        type = types.str;
+        example = "main";
+      };
+      tokenFile = mkOption {
+        type = types.path;
+        description = "File holding a push token for `cache`; read as a systemd credential.";
+      };
+      jobs = mkOption {
+        type = types.ints.positive;
+        default = 8;
+        description = "Parallel uploads.";
+      };
+    };
   };
 
-  config = mkIf cfg.enable {
+  config = lib.mkMerge [
+  (mkIf cfg.enable {
     assertions = [
       {
         assertion = cfg.nginx.enable -> cfg.domain != null;
@@ -154,6 +309,9 @@ in
         HELIOS_GC_INTERVAL_HOURS = toString cfg.settings.gcIntervalHours;
         HELIOS_AUDIT_RETENTION_DAYS = toString cfg.settings.auditRetentionDays;
       }
+      // lib.optionalAttrs cfg.daemon.enable {
+        HELIOS_ADMIN_SOCKET = adminSocket;
+      }
       // lib.optionalAttrs cfg.nginx.enable {
         HELIOS_ACCEL_REDIRECT = "/_nar";
         HELIOS_TRUST_PROXY = "true";
@@ -175,37 +333,16 @@ in
         # nginx (in group helios) reads NARs for X-Accel-Redirect.
         StateDirectory = mkIf (dataDir == defaultDataDir) "helios";
         StateDirectoryMode = "0750";
-        ReadWritePaths = mkIf (dataDir != defaultDataDir) [ dataDir ];
+        ReadWritePaths = optional (dataDir != defaultDataDir) dataDir ++ optional cfg.daemon.enable adminDir;
         UMask = "0027";
         Restart = "on-failure";
         RestartSec = 2;
         LimitNOFILE = 65536;
 
-        # Sandboxing: the server only needs its state directory and the network.
-        NoNewPrivileges = true;
-        CapabilityBoundingSet = "";
-        AmbientCapabilities = "";
-        ProtectSystem = "strict";
-        ProtectHome = true;
-        PrivateTmp = true;
-        PrivateDevices = true;
-        ProtectKernelTunables = true;
-        ProtectKernelModules = true;
-        ProtectKernelLogs = true;
-        ProtectControlGroups = true;
-        ProtectClock = true;
-        ProtectHostname = true;
-        ProtectProc = "invisible";
-        ProcSubset = "pid";
+        # The server only needs its state directory and the network.
         RestrictAddressFamilies = [ "AF_INET" "AF_INET6" "AF_UNIX" ];
-        RestrictNamespaces = true;
-        RestrictRealtime = true;
-        RestrictSUIDSGID = true;
-        LockPersonality = true;
-        MemoryDenyWriteExecute = true;
-        SystemCallArchitectures = "native";
-        SystemCallFilter = [ "@system-service" "~@privileged" ];
-      };
+      }
+      // hardening;
     };
 
     systemd.tmpfiles.rules = mkIf (dataDir != defaultDataDir) [ "d '${dataDir}' 0750 helios helios -" ];
@@ -240,5 +377,79 @@ in
     };
 
     networking.firewall.allowedTCPPorts = mkIf cfg.openFirewall [ 80 443 ];
-  };
+  })
+
+  (mkIf (cfg.enable && cfg.daemon.enable) {
+    users.users.helios-daemon = {
+      isSystemUser = true;
+      group = "helios-admin";
+      # Reads NARs for the scrub.
+      extraGroups = [ "helios" ];
+    };
+    users.groups.helios-admin = { };
+
+    systemd.tmpfiles.rules = [ "d ${adminDir} 2750 helios helios-admin -" ];
+
+    systemd.services.helios-daemon = {
+      description = "Helios cache maintenance";
+      wantedBy = [ "multi-user.target" ];
+      after = [ "helios.service" ];
+      wants = [ "helios.service" ];
+      environment.HELIOS_LOG = cfg.logLevel;
+      serviceConfig = {
+        ExecStart = "${cfg.package}/bin/helios-daemon ${daemonArgs}";
+        User = "helios-daemon";
+        Group = "helios-admin";
+        SupplementaryGroups = [ "helios" ];
+        Restart = "on-failure";
+        RestartSec = 5;
+        # Maintenance must not compete with serving.
+        Nice = 10;
+        CPUSchedulingPolicy = "batch";
+        IOSchedulingClass = "idle";
+        # Reaches the server over its Unix socket; the network only for metrics.
+        PrivateNetwork = cfg.daemon.metrics.listen == null;
+        RestrictAddressFamilies = [ "AF_UNIX" ] ++ lib.optionals (cfg.daemon.metrics.listen != null) [ "AF_INET" "AF_INET6" ];
+      }
+      // hardening;
+    };
+  })
+
+  (mkIf cfg.watchStore.enable {
+    users.users.helios-watch-store = {
+      isSystemUser = true;
+      group = "helios-watch-store";
+      home = "/var/lib/helios-watch-store";
+    };
+    users.groups.helios-watch-store = { };
+
+    nix.settings.post-build-hook = queueHook;
+    systemd.tmpfiles.rules = [ "d ${watchSpool} 0750 helios-watch-store helios-watch-store -" ];
+
+    systemd.services.helios-watch-store = {
+      description = "Push locally built paths to ${cfg.watchStore.url}";
+      wantedBy = [ "multi-user.target" ];
+      after = [ "network-online.target" "nix-daemon.socket" ];
+      wants = [ "network-online.target" ];
+      path = [ config.nix.package ];
+      environment = {
+        HELIOS_URL = cfg.watchStore.url;
+        HOME = "/var/lib/helios-watch-store";
+      };
+      serviceConfig = {
+        ExecStart = "${cfg.package}/bin/helios --token-file %d/token watch-store ${lib.escapeShellArg cfg.watchStore.cache} --spool ${watchSpool} --jobs ${toString cfg.watchStore.jobs}";
+        LoadCredential = [ "token:${cfg.watchStore.tokenFile}" ];
+        User = "helios-watch-store";
+        Group = "helios-watch-store";
+        StateDirectory = "helios-watch-store";
+        StateDirectoryMode = "0750";
+        Restart = "always";
+        RestartSec = 5;
+        Nice = 10;
+        RestrictAddressFamilies = [ "AF_INET" "AF_INET6" "AF_UNIX" ];
+      }
+      // hardening;
+    };
+  })
+  ];
 }
