@@ -56,5 +56,10 @@ pkgs.testers.runNixOSTest {
         # The daemon waited for the new server, not the last run's socket.
         machine.wait_until_succeeds("docker logs helios 2>&1 | grep -c 'helios-daemon started' | grep -qx 2")
         machine.fail("docker logs helios 2>&1 | grep -q 'Connection refused'")
+
+    with subtest("docker stop during startup is clean"):
+        # Without a handler yet, PID 1 would ignore the TERM until the kill.
+        machine.succeed("docker stop helios && docker start helios && timeout 20 docker stop -t 60 helios")
+        assert machine.succeed("docker inspect -f '{{.State.ExitCode}}' helios").strip() == "0"
   '';
 }

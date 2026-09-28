@@ -31,9 +31,10 @@ jobs:
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
-      packages: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
         with:
           # Upstream Nix, as users of the module and image run.
@@ -67,8 +68,31 @@ jobs:
         if: matrix.system != 'x86_64-linux'
         run: nix build -L .#checks.${{ matrix.system }}.package .#docker
 
+  # Builds and pushes each architecture's image. Kept apart from the tests,
+  # which run pull request code, so only pushes ever hold a write token.
+  push:
+    if: github.event_name == 'push'
+    needs: test
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+        with:
+          determinate: false
+
       - name: Push image
-        if: github.event_name == 'push'
         env:
           ARCH: ${{ matrix.arch }}
           TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -87,7 +111,7 @@ jobs:
   # Joins the per-architecture images into one multi-arch tag.
   image:
     if: github.event_name == 'push'
-    needs: test
+    needs: push
     runs-on: ubuntu-24.04
     permissions:
       packages: write

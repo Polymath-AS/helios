@@ -23,6 +23,13 @@ let
   defaultDataDir = "/var/lib/helios";
   secret = name: file: optional (file != null) "${name}:${file}";
 
+  # Secrets are runtime paths given as strings: a path literal, or a string
+  # built from one, would put the secret in the world-readable store.
+  secretFileAssertion = option: file: {
+    assertion = file == null || (lib.hasPrefix "/" file && !(lib.hasPrefix "${builtins.storeDir}/" file));
+    message = "services.helios.${option} must be an absolute path outside the Nix store, such as \"/run/secrets/helios\", given as a string: store paths are world-readable.";
+  };
+
   # The maintenance socket lives in a setgid directory, so it belongs to
   # group helios-admin: the daemon can reach it, nginx (group helios) cannot.
   adminDir = "/run/helios-admin";
@@ -108,7 +115,7 @@ in
     };
 
     signingKeyFile = mkOption {
-      type = types.nullOr types.path;
+      type = types.nullOr types.str;
       default = null;
       description = ''
         Nix secret key (`nix key generate-secret`) used to sign narinfo. Read by
@@ -118,13 +125,13 @@ in
     };
 
     jwtSecretFile = mkOption {
-      type = types.nullOr types.path;
+      type = types.nullOr types.str;
       default = null;
       description = "HMAC secret for API tokens (at least 16 bytes). Without it no tokens can be issued or used.";
     };
 
     adminSecretFile = mkOption {
-      type = types.nullOr types.path;
+      type = types.nullOr types.str;
       default = null;
       description = "Bearer secret for the admin API (at least 16 bytes). Without it the admin API is disabled.";
     };
@@ -171,6 +178,16 @@ in
       auditRetentionDays = mkOption {
         type = types.ints.unsigned;
         default = 30;
+      };
+      compressionLevel = mkOption {
+        type = types.ints.between 0 19;
+        default = 3;
+        description = "zstd level clients compress with unless told otherwise; 0 uploads uncompressed.";
+      };
+      compressionWindowLog = mkOption {
+        type = types.addCheck types.int (n: n == 0 || (n >= 10 && n <= 27));
+        default = 27;
+        description = "zstd long-distance matching window clients use, as a power of two (10-27), or 0 for the level's own.";
       };
     };
 
@@ -288,7 +305,7 @@ in
         example = "main";
       };
       tokenFile = mkOption {
-        type = types.path;
+        type = types.str;
         description = "File holding a push token for `cache`; read as a systemd credential.";
       };
       jobs = mkOption {
@@ -306,6 +323,9 @@ in
         assertion = cfg.nginx.enable -> cfg.domain != null;
         message = "services.helios.nginx.enable requires services.helios.domain";
       }
+      (secretFileAssertion "signingKeyFile" cfg.signingKeyFile)
+      (secretFileAssertion "jwtSecretFile" cfg.jwtSecretFile)
+      (secretFileAssertion "adminSecretFile" cfg.adminSecretFile)
     ];
 
     users.users.helios = {
@@ -327,6 +347,8 @@ in
         HELIOS_MAX_UPLOAD_BYTES = toString cfg.settings.maxUploadBytes;
         HELIOS_GC_INTERVAL_HOURS = toString cfg.settings.gcIntervalHours;
         HELIOS_AUDIT_RETENTION_DAYS = toString cfg.settings.auditRetentionDays;
+        HELIOS_COMPRESSION_LEVEL = toString cfg.settings.compressionLevel;
+        HELIOS_COMPRESSION_WINDOW_LOG = toString cfg.settings.compressionWindowLog;
       }
       // lib.optionalAttrs (cfg.caches != { }) {
         HELIOS_CACHES = lib.concatStringsSep "," (lib.mapAttrsToList (name: c: if c.public then name else "${name}:private") cfg.caches);
@@ -369,7 +391,7 @@ in
 
     systemd.tmpfiles.rules = mkIf (dataDir != defaultDataDir) [ "d '${dataDir}' 0750 helios helios -" ];
 
-    users.users.nginx.extraGroups = mkIf cfg.nginx.enable [ "helios" ];
+    users.users.nginx = mkIf cfg.nginx.enable { extraGroups = [ "helios" ]; };
 
     services.nginx = mkIf cfg.nginx.enable {
       enable = true;
@@ -421,6 +443,8 @@ in
       serviceConfig = {
         ExecStart = "${cfg.package}/bin/helios-daemon ${daemonArgs}";
         User = "helios-daemon";
+        # Where an unfinished scrub resumes after a restart.
+        StateDirectory = "helios-daemon";
         Group = "helios-admin";
         SupplementaryGroups = [ "helios" ];
         Restart = "on-failure";
@@ -438,6 +462,8 @@ in
   })
 
   (mkIf cfg.watchStore.enable {
+    assertions = [ (secretFileAssertion "watchStore.tokenFile" cfg.watchStore.tokenFile) ];
+
     users.users.helios-watch-store = {
       isSystemUser = true;
       group = "helios-watch-store";

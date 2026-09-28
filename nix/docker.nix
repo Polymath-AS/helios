@@ -19,6 +19,21 @@ let
       data="''${HELIOS_DATA_DIR:-/var/lib/helios}"
       secrets="$data/secrets"
 
+      # docker stop: forward SIGTERM so both shut down cleanly. Installed
+      # first because bash is PID 1, which ignores signals without a
+      # handler, and a stop can come before either process has started.
+      stopping=0
+      server=
+      daemon=
+      # shellcheck disable=SC2329 # invoked by the trap below
+      stop() {
+        stopping=1
+        if [[ -n "$server$daemon" ]]; then
+          kill -TERM ''${server:+"$server"} ''${daemon:+"$daemon"} 2>/dev/null || true
+        fi
+      }
+      trap stop TERM INT
+
       # Generate secrets on first start unless they are provided (for
       # example as Docker secrets under /run/secrets).
       if [[ -z "''${HELIOS_SIGNING_KEY_FILE:-}''${HELIOS_JWT_SECRET_FILE:-}''${HELIOS_ADMIN_SECRET_FILE:-}" ]]; then
@@ -32,6 +47,9 @@ let
       if [[ "''${1:-serve}" != serve ]]; then
         exec "$@"
       fi
+      if (( stopping )); then
+        exit 0
+      fi
 
       export HELIOS_ADMIN_SOCKET="''${HELIOS_ADMIN_SOCKET:-/run/helios/admin.sock}"
       # A restarted container keeps the last run's socket; without this the
@@ -39,24 +57,19 @@ let
       rm -f "$HELIOS_ADMIN_SOCKET"
       helios-server &
       server=$!
-      daemon=
+      # The trap may have run between the fork and the assignment.
+      if (( stopping )); then stop; fi
       if [[ "''${HELIOS_DAEMON:-1}" != 0 ]]; then
         for _ in {1..100}; do
-          [[ -S "$HELIOS_ADMIN_SOCKET" ]] && break
+          if [[ -S "$HELIOS_ADMIN_SOCKET" ]] || (( stopping )); then break; fi
           sleep 0.1
         done
-        helios-daemon --socket "$HELIOS_ADMIN_SOCKET" --data-dir "$data" &
-        daemon=$!
+        if (( ! stopping )); then
+          helios-daemon --socket "$HELIOS_ADMIN_SOCKET" --data-dir "$data" --state-dir "$data/daemon" &
+          daemon=$!
+          if (( stopping )); then stop; fi
+        fi
       fi
-
-      # docker stop: forward SIGTERM so both shut down cleanly.
-      stopping=0
-      # shellcheck disable=SC2329 # invoked by the trap below
-      stop() {
-        stopping=1
-        kill -TERM "$server" ''${daemon:+"$daemon"} 2>/dev/null || true
-      }
-      trap stop TERM INT
 
       # If either process exits on its own, take the other down too.
       status=0
