@@ -2,12 +2,15 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 
 /// Helios Nix binary cache server.
 #[derive(Parser, Debug, Clone)]
 #[command(version)]
 pub struct Args {
+    #[command(subcommand)]
+    pub command: Option<Command>,
+
     /// Address to listen on.
     #[arg(long, env = "HELIOS_LISTEN", default_value = "127.0.0.1:8080")]
     pub listen: SocketAddr,
@@ -67,6 +70,19 @@ pub struct Args {
     /// Print the public key for `trusted-public-keys` and exit.
     #[arg(long)]
     pub print_public_key: bool,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum Command {
+    /// Create whichever of signing-key, jwt-secret and admin-secret are
+    /// missing in DIR (mode 0600), and write public-key. Safe to rerun.
+    GenerateSecrets {
+        #[arg(long, env = "HELIOS_SECRETS_DIR")]
+        dir: PathBuf,
+        /// Name for a new signing key, as it appears in `trusted-public-keys`.
+        #[arg(long, env = "HELIOS_KEY_NAME", default_value = "helios-1")]
+        key_name: String,
+    },
 }
 
 #[derive(Debug, Clone)]

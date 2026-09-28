@@ -81,6 +81,9 @@ fn main() -> anyhow::Result<()> {
     log::init();
     let args = Args::parse();
 
+    if let Some(config::Command::GenerateSecrets { dir, key_name }) = &args.command {
+        return generate_secrets(dir, key_name);
+    }
     if args.print_public_key {
         let signer = load_signer(&args)?.ok_or_else(|| anyhow::anyhow!("--signing-key-file is required"))?;
         println!("{}", signer.public_key());
@@ -133,4 +136,45 @@ async fn shutdown_signal() {
     let int = std::pin::pin!(tokio::signal::ctrl_c());
     futures_util::future::select(term, int).await;
     crate::log::info!("shutting down");
+}
+
+/// Writes `contents` to `path` only if it does not exist, readable by the
+/// owner alone. Returns whether it was created.
+fn create_secret(path: &std::path::Path, contents: impl FnOnce() -> anyhow::Result<String>) -> anyhow::Result<bool> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    if path.exists() {
+        return Ok(false);
+    }
+    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(path)?;
+    file.write_all(contents()?.as_bytes())?;
+    file.write_all(b"\n")?;
+    Ok(true)
+}
+
+fn random_hex() -> anyhow::Result<String> {
+    let mut bytes = [0u8; 32];
+    helios_core::random_bytes(&mut bytes);
+    Ok(bytes.iter().map(|b| format!("{b:02x}")).collect())
+}
+
+fn generate_secrets(dir: &std::path::Path, key_name: &str) -> anyhow::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::create_dir_all(dir)?;
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
+    let signing = dir.join("signing-key");
+    for (name, created) in [
+        ("signing-key", create_secret(&signing, || Ok(helios_core::Signer::generate(key_name)?))?),
+        ("jwt-secret", create_secret(&dir.join("jwt-secret"), random_hex)?),
+        ("admin-secret", create_secret(&dir.join("admin-secret"), random_hex)?),
+    ] {
+        if created {
+            log::info!("created {}", dir.join(name).display());
+        }
+    }
+    let key = std::fs::read_to_string(&signing)?;
+    let public = helios_core::Signer::new(&key).ok_or_else(|| anyhow::anyhow!("{} is not a Nix secret key", signing.display()))?.public_key();
+    std::fs::write(dir.join("public-key"), format!("{public}\n"))?;
+    println!("{public}");
+    Ok(())
 }
