@@ -50,6 +50,8 @@
       packages = forAllSystems (pkgs: rec {
         helios = helios' pkgs;
         default = helios;
+        # OCI image with the server and maintenance daemon; see nix/docker.nix.
+        docker = import ./nix/docker.nix { inherit pkgs helios; };
       });
 
       overlays.default = final: _prev: { helios = helios' final; };
@@ -85,6 +87,11 @@
         nixos = import ./nix/test.nix {
           inherit pkgs;
           module = ./nix/module.nix;
+          helios = self.packages.${pkgs.stdenv.hostPlatform.system}.helios;
+        };
+        docker = import ./nix/docker-test.nix {
+          inherit pkgs;
+          image = self.packages.${pkgs.stdenv.hostPlatform.system}.docker;
           helios = self.packages.${pkgs.stdenv.hostPlatform.system}.helios;
         };
       });
