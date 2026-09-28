@@ -83,6 +83,8 @@ hl_signer *hl_signer_new(const char *key, size_t len);
 void hl_signer_free(hl_signer *s);
 /* Writes "<name>:<base64 public key>". Sets *out_len even on HL_E_BUFFER. */
 int hl_signer_public_key(const hl_signer *s, char *out, size_t cap, size_t *out_len);
+/* Generates a new secret key in the same format from the OS CSPRNG. */
+int hl_signer_generate(const char *name, size_t name_len, char *out, size_t cap, size_t *out_len);
 
 typedef struct {
     const char *ptr;

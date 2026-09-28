@@ -33,6 +33,20 @@ pub const Signer = struct {
     /// Comb table for the base point: signing does 64 additions, not 252 doublings.
     table: basemul.Table,
 
+    /// Writes a new Nix secret key, `<name>:<base64 of 64 bytes>` (the
+    /// `nix key generate-secret` format), derived from a random `seed`.
+    pub fn generate(out: *std.ArrayList(u8), allocator: std.mem.Allocator, name: []const u8, seed: [32]u8) Error!void {
+        if (name.len == 0) return error.InvalidKey;
+        for (name) |c| if (c == ':' or c == '\n' or c == ' ') return error.InvalidKey;
+        const key_pair = Ed25519.KeyPair.generateDeterministic(seed) catch return error.InvalidKey;
+        const bytes = key_pair.secret_key.toBytes();
+        var b64: [std.base64.standard.Encoder.calcSize(bytes.len)]u8 = undefined;
+        _ = std.base64.standard.Encoder.encode(&b64, &bytes);
+        try out.appendSlice(allocator, name);
+        try out.append(allocator, ':');
+        try out.appendSlice(allocator, &b64);
+    }
+
     /// Parses a Nix secret key: `<name>:<base64 of 64-byte secret key>`.
     pub fn parse(allocator: std.mem.Allocator, text: []const u8) Error!*Signer {
         const trimmed = std.mem.trim(u8, text, " \t\r\n");
@@ -280,4 +294,16 @@ test "fast signing is byte-identical to std Ed25519" {
         const theirs = (try signer.key_pair.sign(msg[0 .. i + 1], null)).toBytes();
         try std.testing.expectEqualSlices(u8, &theirs, &ours);
     }
+}
+
+test "generated keys parse and sign" {
+    const a = std.testing.allocator;
+    var text: std.ArrayList(u8) = .empty;
+    defer text.deinit(a);
+    try Signer.generate(&text, a, "gen-1", [_]u8{42} ** 32);
+    const signer = try Signer.parse(a, text.items);
+    defer signer.destroy(a);
+    const theirs = (try signer.key_pair.sign("msg", null)).toBytes();
+    try std.testing.expectEqualSlices(u8, &theirs, &(try signer.signRaw("msg")));
+    try std.testing.expectError(error.InvalidKey, Signer.generate(&text, a, "bad:name", [_]u8{1} ** 32));
 }

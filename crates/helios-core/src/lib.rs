@@ -68,6 +68,7 @@ mod sys {
         pub fn hl_signer_new(key: *const u8, len: usize) -> *mut Signer;
         pub fn hl_signer_free(s: *mut Signer);
         pub fn hl_signer_public_key(s: *const Signer, out: *mut u8, cap: usize, out_len: *mut usize) -> c_int;
+        pub fn hl_signer_generate(name: *const u8, name_len: usize, out: *mut u8, cap: usize, out_len: *mut usize) -> c_int;
         pub fn hl_narinfo_render(input: *const NarinfoInput, signer: *const Signer, out: *mut *mut u8, out_len: *mut usize) -> c_int;
         pub fn hl_free(ptr: *mut u8, len: usize);
         pub fn hl_sha256(data: *const u8, len: usize, out: *mut [u8; 32]);
@@ -315,6 +316,15 @@ impl Signer {
         (!raw.is_null()).then_some(Self { raw })
     }
 
+    /// A new Nix secret key named `name`, in `nix key generate-secret` format.
+    pub fn generate(name: &str) -> Result<String, Error> {
+        let mut buf = vec![0u8; 256];
+        let mut len = 0usize;
+        check(unsafe { sys::hl_signer_generate(name.as_ptr(), name.len(), buf.as_mut_ptr(), buf.len(), &mut len) })?;
+        buf.truncate(len);
+        Ok(String::from_utf8(buf).expect("key name was valid UTF-8"))
+    }
+
     /// `<name>:<base64>`, the value for `trusted-public-keys`.
     pub fn public_key(&self) -> String {
         let mut buf = vec![0u8; 256];
@@ -463,6 +473,15 @@ mod tests {
         assert_eq!(text.len(), 32);
         assert_eq!(nix32_decode::<20>(&text), Some(bytes));
         assert_eq!(nix32_decode::<20>("not-valid"), None);
+    }
+
+    #[test]
+    fn generated_keys_round_trip() {
+        let key = Signer::generate("gen-1").unwrap();
+        assert!(key.starts_with("gen-1:"));
+        assert_ne!(key, Signer::generate("gen-1").unwrap());
+        assert!(Signer::new(&key).unwrap().public_key().starts_with("gen-1:"));
+        assert!(Signer::generate("bad:name").is_err());
     }
 
     #[test]

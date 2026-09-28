@@ -162,6 +162,21 @@ export fn hl_signer_free(s: ?*narinfo.Signer) void {
     if (s) |p| p.destroy(gpa);
 }
 
+/// Generates a Nix secret key named `name` from the OS CSPRNG.
+export fn hl_signer_generate(name: [*]const u8, name_len: usize, out: ?[*]u8, cap: usize, out_len: *usize) c_int {
+    var seed: [32]u8 = undefined;
+    const rc = hl_random(&seed, seed.len);
+    if (rc != HL_OK) return rc;
+    defer std.crypto.secureZero(u8, &seed);
+    var list: std.ArrayList(u8) = .empty;
+    defer {
+        std.crypto.secureZero(u8, list.items);
+        list.deinit(gpa);
+    }
+    narinfo.Signer.generate(&list, gpa, name[0..name_len], seed) catch |e| return code(e);
+    return copyOut(list.items, out, cap, out_len);
+}
+
 fn copyOut(bytes: []const u8, out: ?[*]u8, cap: usize, out_len: *usize) c_int {
     out_len.* = bytes.len;
     if (bytes.len > cap or out == null) return HL_E_BUFFER;
