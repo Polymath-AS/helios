@@ -32,8 +32,12 @@ Every flag can also be set through its environment variable.
 | `--gc-interval-hours` | `HELIOS_GC_INTERVAL_HOURS` | `6` |
 | `--audit-retention-days` | `HELIOS_AUDIT_RETENTION_DAYS` | `30` |
 
-Secret files must hold at least 16 bytes. Logging follows `RUST_LOG`
-(default `helios_server=info`).
+Secret files must hold at least 16 bytes. `HELIOS_LOG` sets the log level
+(`error`, `warn`, `info` or `debug`; default `info`). Under systemd, log lines
+carry journald priorities.
+
+The server links the system SQLite; build with `--features bundled-sqlite`
+to compile SQLite in instead.
 
 ## Reverse proxy and zero-copy downloads
 

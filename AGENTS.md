@@ -22,8 +22,18 @@ coarse, such as a whole NAR or narinfo per call.
 - Use `nix develop` for zig 0.16, cargo, zstd and pkg-config.
 - Zig 0.16 APIs changed a lot; check `zig env` for the std source rather
   than relying on older examples.
+- System libraries: zstd and sqlite (pkg-config).
 - `HELIOS_ZIG_CPU` sets libhelios's `-Dcpu` (default `native`; the Nix
   package uses `baseline`).
+
+## Dependencies
+
+Keep the dependency tree small; every crate is build time, audit surface and
+supply-chain risk. Before adding one, check whether libhelios, std or a few
+dozen lines cover it, and disable default features. Deliberately absent:
+reqwest (and `url`/`idna`), aws-lc-rs, tracing, parking_lot, uuid,
+hmac/sha2 (libhelios provides SHA-256, HMAC and randomness) and mimalloc
+(measured: no gain here).
 
 ## Performance Rules
 
