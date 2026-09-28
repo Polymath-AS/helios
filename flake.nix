@@ -7,18 +7,24 @@
 
   outputs = { self, nixpkgs }:
     let
-      # NAR serialisation is implemented for Linux; macOS builds are untested.
+      # NAR serialisation is implemented for Linux only.
       systems = [ "x86_64-linux" "aarch64-linux" ];
       forAllSystems = fn: nixpkgs.lib.genAttrs systems (system: fn nixpkgs.legacyPackages.${system});
 
       helios' = pkgs: pkgs.rustPlatform.buildRustPackage {
         pname = "helios";
         version = "0.1.0";
+        # Only what the build reads, so docs and module edits do not rebuild it.
         src = pkgs.lib.cleanSourceWith {
           src = self;
           filter = path: _type:
-            let base = baseNameOf path; in
-            !(builtins.elem base [ "target" ".zig-cache" "zig-out" "bench" ]);
+            let
+              rel = pkgs.lib.removePrefix "${toString self}/" (toString path);
+              top = builtins.head (pkgs.lib.splitString "/" rel);
+              base = baseNameOf path;
+            in
+            builtins.elem top [ "Cargo.toml" "Cargo.lock" "core" "crates" "pkg" ]
+            && !(builtins.elem base [ "target" ".zig-cache" "zig-out" ]);
         };
         cargoLock.lockFile = ./Cargo.lock;
 
@@ -46,6 +52,17 @@
         default = helios;
       });
 
+      overlays.default = final: _prev: { helios = helios' final; };
+
+      # services.helios; the package defaults to this flake's build.
+      nixosModules.default =
+        { lib, pkgs, ... }:
+        {
+          imports = [ ./nix/module.nix ];
+          services.helios.package = lib.mkDefault (helios' pkgs);
+        };
+      nixosModules.helios = self.nixosModules.default;
+
       devShells = forAllSystems (pkgs: {
         default = pkgs.mkShell {
           packages = [
@@ -64,7 +81,12 @@
       });
 
       checks = forAllSystems (pkgs: {
-        default = self.packages.${pkgs.stdenv.hostPlatform.system}.helios;
+        package = self.packages.${pkgs.stdenv.hostPlatform.system}.helios;
+        nixos = import ./nix/test.nix {
+          inherit pkgs;
+          module = ./nix/module.nix;
+          helios = self.packages.${pkgs.stdenv.hostPlatform.system}.helios;
+        };
       });
     };
 }
