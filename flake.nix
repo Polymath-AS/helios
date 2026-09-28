@@ -23,7 +23,7 @@
         cargoLock.lockFile = ./Cargo.lock;
 
         nativeBuildInputs = [ pkgs.zig pkgs.pkg-config ];
-        buildInputs = [ pkgs.zstd ];
+        buildInputs = [ pkgs.zstd pkgs.sqlite ];
 
         # Nix builds must not depend on the build machine's CPU. `baseline`
         # loses SHA-NI accelerated hashing; for a dedicated host, build with
@@ -56,6 +56,7 @@
             pkgs.rustfmt
             pkgs.pkg-config
             pkgs.zstd
+            pkgs.sqlite
             pkgs.jq
             pkgs.curl
           ];
