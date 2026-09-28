@@ -1,0 +1,16 @@
+[package]
+name = "helios-core"
+description = "Safe Rust bindings to libhelios (Zig): NAR pipeline, narinfo, signing"
+version.workspace = true
+edition.workspace = true
+license-file.workspace = true
+publish.workspace = true
+links = "helios"
+
+[dependencies]
+
+[build-dependencies]
+pkg-config = "0.3.34"
+
+[dev-dependencies]
+tempfile = "3.27.0"
