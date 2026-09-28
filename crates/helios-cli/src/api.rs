@@ -1,15 +1,14 @@
 use anyhow::{Context, bail};
-use reqwest::{Body, Response, StatusCode};
+use http::{Method, StatusCode};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::config::Server;
+use crate::transport::{self, Body};
 
-#[derive(Clone)]
 pub struct Client {
-    http: reqwest::Client,
-    base: String,
+    http: transport::Client,
     token: String,
 }
 
@@ -38,36 +37,29 @@ pub enum Publish {
     MissingNars(Vec<String>),
 }
 
-async fn error_text(resp: Response) -> String {
-    let status = resp.status();
-    let body = resp.text().await.unwrap_or_default();
-    let msg = serde_json::from_str::<Value>(&body)
+fn error_text(status: StatusCode, body: &[u8]) -> String {
+    let msg = serde_json::from_slice::<Value>(body)
         .ok()
         .and_then(|v| v.get("error").and_then(Value::as_str).map(str::to_owned))
-        .unwrap_or(body);
+        .unwrap_or_else(|| String::from_utf8_lossy(body).into_owned());
     format!("{status}: {msg}")
 }
 
 impl Client {
     pub fn new(server: &Server) -> anyhow::Result<Self> {
-        let http = reqwest::Client::builder()
-            .user_agent(concat!("helios-cli/", env!("CARGO_PKG_VERSION")))
-            .tcp_nodelay(true)
-            .pool_max_idle_per_host(64)
-            .build()?;
-        Ok(Self { http, base: server.server.trim_end_matches('/').to_owned(), token: server.token.clone() })
+        Ok(Self { http: transport::Client::new(server.server.trim_end_matches('/'))?, token: server.token.clone() })
     }
 
-    fn url(&self, path: &str) -> String {
-        format!("{}/_api/v2{path}", self.base)
-    }
-
-    async fn json<T: DeserializeOwned>(&self, req: reqwest::RequestBuilder) -> anyhow::Result<T> {
-        let resp = req.bearer_auth(&self.token).send().await?;
-        if !resp.status().is_success() {
-            bail!("{}", error_text(resp).await);
+    async fn call<T: DeserializeOwned>(&self, method: Method, path: &str, content_type: Option<&str>, body: Body) -> anyhow::Result<T> {
+        let (status, bytes) = self.http.send(method, &format!("/_api/v2{path}"), &self.token, content_type, body).await?;
+        if !status.is_success() {
+            bail!("{}", error_text(status, &bytes));
         }
-        Ok(resp.json().await?)
+        serde_json::from_slice(&bytes).with_context(|| format!("decoding response from {path}"))
+    }
+
+    async fn post<T: DeserializeOwned>(&self, path: &str, body: &Value) -> anyhow::Result<T> {
+        self.call(Method::POST, path, Some("application/json"), transport::full(serde_json::to_vec(body)?)).await
     }
 
     pub async fn missing(&self, cache: &str, hashes: &[&str]) -> anyhow::Result<Vec<String>> {
@@ -75,7 +67,7 @@ impl Client {
         struct R {
             missing: Vec<String>,
         }
-        let r: R = self.json(self.http.post(self.url(&format!("/caches/{cache}/missing"))).json(&json!({ "hashes": hashes }))).await?;
+        let r: R = self.post(&format!("/caches/{cache}/missing"), &json!({ "hashes": hashes })).await?;
         Ok(r.missing)
     }
 
@@ -84,50 +76,42 @@ impl Client {
         struct R {
             known: Vec<String>,
         }
-        let r: R = self
-            .json(self.http.post(self.url(&format!("/caches/{cache}/nars/known"))).json(&json!({ "narHashes": nar_hashes })))
-            .await?;
+        let r: R = self.post(&format!("/caches/{cache}/nars/known"), &json!({ "narHashes": nar_hashes })).await?;
         Ok(r.known)
     }
 
     pub async fn upload(&self, cache: &str, body: Body) -> anyhow::Result<Uploaded> {
-        self.json(
-            self.http
-                .put(self.url(&format!("/caches/{cache}/nar?compression=zstd")))
-                .header("content-type", "application/x-nix-nar")
-                .body(body),
-        )
-        .await
+        self.call(Method::PUT, &format!("/caches/{cache}/nar?compression=zstd"), Some("application/x-nix-nar"), body).await
     }
 
     pub async fn publish(&self, cache: &str, paths: &[PathSpec]) -> anyhow::Result<Publish> {
-        let resp = self
+        let body = transport::full(serde_json::to_vec(&json!({ "paths": paths }))?);
+        let (status, bytes) = self
             .http
-            .post(self.url(&format!("/caches/{cache}/paths")))
-            .bearer_auth(&self.token)
-            .json(&json!({ "paths": paths }))
-            .send()
+            .send(Method::POST, &format!("/_api/v2/caches/{cache}/paths"), &self.token, Some("application/json"), body)
             .await?;
-        if resp.status() == StatusCode::CONFLICT {
-            let v: Value = resp.json().await?;
+        if status == StatusCode::CONFLICT {
+            let v: Value = serde_json::from_slice(&bytes)?;
             if v["error"] == "nar_required" {
                 let missing = v["missing"].as_array().context("missing list")?.iter().filter_map(|m| m.as_str().map(str::to_owned)).collect();
                 return Ok(Publish::MissingNars(missing));
             }
             bail!("publish conflict: {}", v["error"]);
         }
-        if !resp.status().is_success() {
-            bail!("{}", error_text(resp).await);
+        if !status.is_success() {
+            bail!("{}", error_text(status, &bytes));
         }
-        let v: Value = resp.json().await?;
+        let v: Value = serde_json::from_slice(&bytes)?;
         Ok(Publish::Done { published: v["published"].as_u64().unwrap_or(0) })
     }
 
     pub async fn admin_get(&self, path: &str) -> anyhow::Result<Value> {
-        self.json(self.http.get(self.url(path))).await
+        self.call(Method::GET, path, None, transport::full(Bytes::new())).await
     }
 
     pub async fn admin_post(&self, path: &str, body: Value) -> anyhow::Result<Value> {
-        self.json(self.http.post(self.url(path)).json(&body)).await
+        self.post(path, &body).await
     }
 }
+
+use bytes::Bytes;

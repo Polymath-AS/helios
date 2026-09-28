@@ -37,7 +37,7 @@ fn full(p: &str) -> String {
 }
 
 async fn run(args: &[&str], installables: &[String]) -> anyhow::Result<std::process::Output> {
-    Ok(Command::new("nix")
+    Command::new("nix")
         .args(["--extra-experimental-features", "nix-command flakes", "path-info"])
         .args(args)
         .arg("--")
@@ -45,7 +45,7 @@ async fn run(args: &[&str], installables: &[String]) -> anyhow::Result<std::proc
         .stderr(std::process::Stdio::piped())
         .output()
         .await
-        .context("running nix path-info (is nix on PATH?)")?)
+        .context("running nix path-info (is nix on PATH?)")
 }
 
 pub async fn path_infos(installables: &[String], closure: bool) -> anyhow::Result<Vec<PathInfo>> {

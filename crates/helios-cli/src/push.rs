@@ -12,7 +12,6 @@ use bytes::Bytes;
 use futures_util::StreamExt;
 use helios_core::{DumpOptions, HL_E_UNSUPPORTED_OS};
 use tokio::sync::mpsc;
-use tokio_stream::wrappers::ReceiverStream;
 
 use crate::api::{Client, PathSpec, Publish};
 use crate::nix::{self, PathInfo};
@@ -82,7 +81,8 @@ async fn upload_one(client: &Client, cache: &str, info: &PathInfo, opts: DumpOpt
     let (tx, rx) = mpsc::channel(8);
     let path = info.path.clone();
     let producer = tokio::task::spawn_blocking(move || produce(&path, opts, tx));
-    let body = reqwest::Body::wrap_stream(ReceiverStream::new(rx));
+    let chunks = futures_util::stream::unfold(rx, |mut rx| async move { rx.recv().await.map(|c| (c, rx)) });
+    let body = crate::transport::stream(chunks);
     let uploaded = client.upload(cache, body).await;
     let digest = producer.await?;
     // An upload failure aborts the producer; report the upload's error.

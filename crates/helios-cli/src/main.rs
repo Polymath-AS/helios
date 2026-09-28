@@ -1,13 +1,11 @@
 mod api;
 mod config;
+mod transport;
 mod nix;
 mod push;
 
 use clap::{Parser, Subcommand};
 use serde_json::{Value, json};
-
-#[global_allocator]
-static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 /// Helios Nix binary cache CLI.
 #[derive(Parser)]
@@ -116,9 +114,17 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[tokio::main]
-async fn main() {
-    if let Err(e) = run(Cli::parse()).await {
+fn main() {
+    // Nix environments point at their CA bundle with NIX_SSL_CERT_FILE.
+    if std::env::var_os("SSL_CERT_FILE").is_none()
+        && let Some(file) = std::env::var_os("NIX_SSL_CERT_FILE")
+    {
+        // SAFETY: single-threaded; the runtime has not started yet.
+        unsafe { std::env::set_var("SSL_CERT_FILE", file) };
+    }
+    let cli = Cli::parse();
+    let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("starting the tokio runtime");
+    if let Err(e) = runtime.block_on(run(cli)) {
         eprintln!("error: {e:#}");
         std::process::exit(1);
     }
