@@ -293,6 +293,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "helios-daemon"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "clap",
+ "futures-util",
+ "helios-core",
+ "http",
+ "http-body-util",
+ "hyper",
+ "libc",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "helios-server"
 version = "0.1.0"
 dependencies = [
