@@ -66,6 +66,8 @@ nix.settings = {
 
 On NixOS, use the flake's `nixosModules.default` (`services.helios`): the
 server, the maintenance daemon, and push-on-build for build machines.
+Elsewhere, `nix build .#docker` builds an OCI image of the server and daemon
+that generates its keys on first start.
 
 See [docs.md](docs.md) for the NixOS module, configuration, private caches,
 the HTTP API and deployment behind a reverse proxy.

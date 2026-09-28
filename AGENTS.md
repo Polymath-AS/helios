@@ -12,7 +12,8 @@ A self-hosted Nix binary cache: Rust server and CLI over a Zig core.
 - `crates/helios-server`, `crates/helios-cli`, `crates/helios-daemon`: the
   binaries. The daemon drives the server over its maintenance socket and
   never writes the database itself.
-- `nix/`: the NixOS module (`services.helios`) and its VM test.
+- `nix/`: the NixOS module (`services.helios`), the OCI image, and their VM
+  tests.
 - `bench/`: comparisons against Cachix's libraries and Nix C++. Not part of
   the Cargo workspace.
 
@@ -52,7 +53,8 @@ hmac/sha2 (libhelios provides SHA-256, HMAC and randomness) and mimalloc
 - `cargo test --release`
 - `./scripts/test-zig.sh`
 - `nix build .#checks.x86_64-linux.nixos` after changing `nix/`: a VM test of
-  the NixOS module.
+  the NixOS module. `.#checks.x86_64-linux.docker` likewise for the OCI
+  image.
 - `./scripts/e2e.sh` before finishing changes to the server, the CLI or wire
   formats; it substitutes a real closure through Nix with signatures
   required.
