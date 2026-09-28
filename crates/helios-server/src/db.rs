@@ -58,7 +58,14 @@ CREATE TABLE audit_log (
     status INTEGER NOT NULL
 );
 CREATE INDEX audit_log_ts ON audit_log (ts);
-"#];
+"#,
+    // Last narinfo hit per path, for least-recently-used eviction.
+    r#"
+ALTER TABLE paths ADD COLUMN accessed_at INTEGER NOT NULL DEFAULT 0;
+UPDATE paths SET accessed_at = created_at;
+CREATE INDEX paths_accessed ON paths (accessed_at);
+"#,
+];
 
 const PRAGMAS: &str = "
 PRAGMA busy_timeout = 5000;

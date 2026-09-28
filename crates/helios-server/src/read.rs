@@ -77,8 +77,11 @@ async fn serve(st: Shared, method: Method, uri: Uri, headers: HeaderMap) -> ApiR
             };
             let key = PathKey { cache: cache.id, hash };
             if !st.index.rd().contains(&key) {
+                st.counters.narinfo_misses.inc();
                 return Ok(not_found(if cache.public { NEGATIVE } else { PRIVATE }));
             }
+            st.counters.narinfo_hits.inc();
+            st.access.touch(key);
             let body = match st.narinfo.get(&key) {
                 Some(body) => body,
                 None => {
@@ -103,6 +106,7 @@ async fn serve(st: Shared, method: Method, uri: Uri, headers: HeaderMap) -> ApiR
                 .into_response())
         }
         Route::Nar(hash, compression) => {
+            st.counters.nar_requests.inc();
             let Some(file_hash) = helios_core::nix32_decode::<32>(hash) else {
                 return Ok(not_found(NEGATIVE));
             };

@@ -1,5 +1,6 @@
 //! Periodic garbage collection: stale temp uploads, unreferenced blobs past
-//! a grace period, expired tokens, and old audit log entries.
+//! a grace period, expired tokens, and old audit log entries. Also flushes
+//! recorded narinfo hits to `paths.accessed_at` for LRU eviction.
 
 use std::time::{Duration, SystemTime};
 
@@ -9,13 +10,12 @@ use rusqlite::params;
 use crate::state::Locked;
 use crate::state::Shared;
 
-/// Blobs uploaded but not yet published are kept this long, so a push that
-/// uploads first and publishes afterwards is never raced by GC.
-const BLOB_GRACE: Duration = Duration::from_secs(3600);
 const TMP_MAX_AGE: Duration = Duration::from_secs(3600);
 const BLOB_BATCH: usize = 1000;
+const ACCESS_FLUSH: Duration = Duration::from_secs(60);
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct GcStats {
     pub tmp_files: usize,
     pub blobs: usize,
@@ -55,7 +55,22 @@ pub fn collect(st: &Shared) -> anyhow::Result<GcStats> {
         }
     }
 
-    let cutoff = now - BLOB_GRACE.as_secs() as i64;
+    (stats.blobs, stats.bytes) = collect_blobs(st)?;
+
+    stats.tokens = st.db.write(|conn| conn.execute("DELETE FROM tokens WHERE expires_at < ?1", [now]))?;
+    st.tokens.wr().retain(|_, t| t.expires_at >= now);
+
+    let audit_cutoff = now - st.cfg.audit_retention.as_secs() as i64;
+    stats.audit_rows = st.db.write(|conn| conn.execute("DELETE FROM audit_log WHERE ts < ?1", [audit_cutoff]))?;
+    Ok(stats)
+}
+
+/// Deletes blobs no path references, once past the upload grace period, so
+/// a push that uploads first and publishes afterwards is never raced.
+/// Returns (blobs, bytes) removed.
+pub fn collect_blobs(st: &Shared) -> anyhow::Result<(usize, u64)> {
+    let cutoff = crate::db::now() - st.cfg.upload_grace.as_secs() as i64;
+    let (mut total, mut freed) = (0usize, 0u64);
     loop {
         // Row delete and unlink share the writer lock with upload's
         // rename+upsert, so a re-uploaded blob can never lose its file.
@@ -81,23 +96,49 @@ pub fn collect(st: &Shared) -> anyhow::Result<GcStats> {
                     continue;
                 };
                 match std::fs::remove_file(st.nar_path(&hash, compression)) {
-                    Ok(()) => stats.bytes += size,
+                    Ok(()) => freed += size,
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
                     Err(e) => crate::log::warning!("removing blob file: {e}"),
                 }
             }
             Ok(victims.len())
         })?;
-        stats.blobs += n;
+        total += n;
         if n < BLOB_BATCH {
-            break;
+            return Ok((total, freed));
         }
     }
+}
 
-    stats.tokens = st.db.write(|conn| conn.execute("DELETE FROM tokens WHERE expires_at < ?1", [now]))?;
-    st.tokens.wr().retain(|_, t| t.expires_at >= now);
+/// Writes recorded narinfo hits to `paths.accessed_at` in one transaction.
+pub fn flush_access(st: &Shared) -> rusqlite::Result<usize> {
+    let keys = st.access.drain();
+    if keys.is_empty() {
+        return Ok(0);
+    }
+    let now = crate::db::now();
+    st.db.write(|conn| {
+        let tx = conn.transaction()?;
+        {
+            let mut stmt = tx.prepare_cached("UPDATE paths SET accessed_at = ?1 WHERE cache_id = ?2 AND hash = ?3")?;
+            for k in &keys {
+                stmt.execute(params![now, k.cache, &k.hash[..]])?;
+            }
+        }
+        tx.commit()?;
+        Ok(keys.len())
+    })
+}
 
-    let audit_cutoff = now - st.cfg.audit_retention.as_secs() as i64;
-    stats.audit_rows = st.db.write(|conn| conn.execute("DELETE FROM audit_log WHERE ts < ?1", [audit_cutoff]))?;
-    Ok(stats)
+pub async fn run_access_flush(st: Shared) {
+    let mut interval = tokio::time::interval(ACCESS_FLUSH);
+    loop {
+        interval.tick().await;
+        let st2 = st.clone();
+        match tokio::task::spawn_blocking(move || flush_access(&st2)).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(e)) => crate::log::error!("flushing access times: {e}"),
+            Err(e) => crate::log::error!("access flush panicked: {e}"),
+        }
+    }
 }

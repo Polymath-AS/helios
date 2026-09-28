@@ -46,6 +46,11 @@ pub struct Args {
     #[arg(long, env = "HELIOS_MAX_UPLOAD_BYTES", default_value_t = 64 << 30)]
     pub max_upload_bytes: u64,
 
+    /// Seconds an uploaded NAR is kept before it must be published. Protects
+    /// pushes in flight from GC and eviction.
+    #[arg(long, env = "HELIOS_UPLOAD_GRACE_SECONDS", default_value_t = 3600)]
+    pub upload_grace_seconds: u64,
+
     /// Hours between garbage collection runs.
     #[arg(long, env = "HELIOS_GC_INTERVAL_HOURS", default_value_t = 6)]
     pub gc_interval_hours: u64,
@@ -53,6 +58,11 @@ pub struct Args {
     /// Days to keep audit log entries.
     #[arg(long, env = "HELIOS_AUDIT_RETENTION_DAYS", default_value_t = 30)]
     pub audit_retention_days: u64,
+
+    /// Unix socket for the maintenance API used by helios-daemon. Access is
+    /// controlled by the socket's permissions (created 0660).
+    #[arg(long, env = "HELIOS_ADMIN_SOCKET")]
+    pub admin_socket: Option<PathBuf>,
 
     /// Print the public key for `trusted-public-keys` and exit.
     #[arg(long)]
@@ -68,6 +78,7 @@ pub struct Config {
     pub trust_proxy: bool,
     pub narinfo_cache_entries: usize,
     pub max_upload_bytes: u64,
+    pub upload_grace: Duration,
     pub gc_interval: Duration,
     pub audit_retention: Duration,
 }
@@ -90,6 +101,7 @@ impl Config {
             trust_proxy: args.trust_proxy,
             narinfo_cache_entries: args.narinfo_cache_entries.max(16),
             max_upload_bytes: args.max_upload_bytes,
+            upload_grace: Duration::from_secs(args.upload_grace_seconds),
             gc_interval: Duration::from_secs(args.gc_interval_hours.max(1) * 3600),
             audit_retention: Duration::from_secs(args.audit_retention_days * 86400),
         })

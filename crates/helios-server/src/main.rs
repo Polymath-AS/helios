@@ -5,10 +5,12 @@ mod config;
 mod db;
 mod error;
 mod gc;
+mod internal;
 mod log;
 mod push;
 mod read;
 mod state;
+mod stats;
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -71,6 +73,7 @@ pub async fn build_state(args: &Args) -> anyhow::Result<Shared> {
     tokio::spawn(audit::run(db.clone(), audit_rx));
     let st = Arc::new(AppState::load(cfg, db, signer, audit_tx)?);
     tokio::spawn(gc::run_forever(st.clone()));
+    tokio::spawn(gc::run_access_flush(st.clone()));
     Ok(st)
 }
 
@@ -86,11 +89,38 @@ fn main() -> anyhow::Result<()> {
 
     tokio::runtime::Builder::new_multi_thread().enable_all().build()?.block_on(async move {
         let st = build_state(&args).await?;
+        let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+        tokio::spawn(async move {
+            shutdown_signal().await;
+            let _ = stop_tx.send(true);
+        });
+        let stopped = |mut rx: tokio::sync::watch::Receiver<bool>| async move {
+            let _ = rx.wait_for(|stop| *stop).await;
+        };
+
+        let admin = match &args.admin_socket {
+            Some(path) => {
+                let _ = std::fs::remove_file(path);
+                let listener = tokio::net::UnixListener::bind(path)?;
+                // Group access only: the socket directory decides who that is.
+                std::fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o660))?;
+                crate::log::info!("maintenance API on {}", path.display());
+                let serve = axum::serve(listener, internal::router(st.clone())).with_graceful_shutdown(stopped(stop_rx.clone()));
+                Some(tokio::spawn(async move { serve.await }))
+            }
+            None => None,
+        };
+
         let listener = tokio::net::TcpListener::bind(args.listen).await?;
         crate::log::info!("listening on {}", args.listen);
-        axum::serve(listener, router(st).into_make_service_with_connect_info::<SocketAddr>())
-            .with_graceful_shutdown(shutdown_signal())
+        axum::serve(listener, router(st.clone()).into_make_service_with_connect_info::<SocketAddr>())
+            .with_graceful_shutdown(stopped(stop_rx))
             .await?;
+        if let Some(admin) = admin {
+            admin.await??;
+        }
+        // Keep the hits recorded since the last flush.
+        tokio::task::spawn_blocking(move || gc::flush_access(&st)).await??;
         Ok(())
     })
 }

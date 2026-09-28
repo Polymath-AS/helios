@@ -73,6 +73,8 @@ pub struct AppState {
     pub narinfo: quick_cache::sync::Cache<PathKey, Bytes, quick_cache::UnitWeighter, BuildHasherDefault<PassThroughHasher>>,
     pub tokens: RwLock<HashMap<Box<str>, TokenState>>,
     pub audit: mpsc::UnboundedSender<AuditEvent>,
+    pub counters: crate::stats::Counters,
+    pub access: crate::stats::Access,
 }
 
 pub type Shared = Arc<AppState>;
@@ -126,6 +128,8 @@ impl AppState {
             narinfo,
             tokens: RwLock::new(tokens),
             audit,
+            counters: Default::default(),
+            access: Default::default(),
         })
     }
 

@@ -223,6 +223,8 @@ pub async fn upload(
         nar_hash: format!("sha256:{}", helios_core::nix32_encode(&digest.nar_hash)),
         nar_size: digest.nar_size,
     };
+    st.counters.uploads.inc();
+    st.counters.upload_bytes.add(resp.file_size);
     audit.log(&st, &identity, "nar.upload", Some(&name), StatusCode::CREATED, json!({ "fileHash": resp.file_hash, "size": resp.file_size }));
     Ok((StatusCode::CREATED, Json(resp)))
 }
@@ -365,6 +367,7 @@ pub async fn publish(
     }
 
     let published = rendered_keys.len();
+    st.counters.published_paths.add(published as u64);
     {
         let mut index = st.index.wr();
         for key in rendered_keys {
