@@ -9,6 +9,8 @@ Everything lives under `--data-dir`:
 | `helios.db` | SQLite (WAL): caches, blobs, published paths, tokens, audit log |
 | `nar/<xx>/<hash>.nar.zst` | Content-addressed compressed NARs |
 | `tmp/` | In-flight uploads, renamed into `nar/` once verified |
+| `backups/` | Database backups made on request of helios-daemon |
+| `quarantine/` | NARs the integrity scrub found missing or corrupt |
 
 Uploads are decompressed and hashed by the server as they stream in, so a
 path is only published against a NAR whose hash the server computed itself.
@@ -31,6 +33,8 @@ Every flag can also be set through its environment variable.
 | `--max-upload-bytes` | `HELIOS_MAX_UPLOAD_BYTES` | 64 GiB |
 | `--gc-interval-hours` | `HELIOS_GC_INTERVAL_HOURS` | `6` |
 | `--audit-retention-days` | `HELIOS_AUDIT_RETENTION_DAYS` | `30` |
+| `--upload-grace-seconds` | `HELIOS_UPLOAD_GRACE_SECONDS` | `3600`: an unpublished upload is kept this long |
+| `--admin-socket` | `HELIOS_ADMIN_SOCKET` | unset: no maintenance API (see helios-daemon) |
 
 Secret files must hold at least 16 bytes. `HELIOS_LOG` sets the log level
 (`error`, `warn`, `info` or `debug`; default `info`). Under systemd, log lines
@@ -90,8 +94,33 @@ placed by hand). Without `domain`, the module runs only the server on
 | `logLevel` | `info` | |
 | `settings.*` | | `narinfoCacheEntries`, `maxUploadBytes`, `gcIntervalHours`, `auditRetentionDays` |
 
-`overlays.default` adds `pkgs.helios`. `nix flake check` runs a VM test that
-pushes a closure through the module and substitutes it back.
+`services.helios.daemon` (on by default) runs helios-daemon beside the
+server; see [Maintenance](#maintenance). To keep the cache under a size:
+
+```nix
+services.helios.daemon = {
+  quota = "500G";
+  minFree = "20G";
+  metrics.listen = "127.0.0.1:9120";
+};
+```
+
+`services.helios.watchStore` goes on build machines, and needs no server
+there. It installs a Nix post-build hook, so every path the machine builds is
+pushed to a cache:
+
+```nix
+services.helios.watchStore = {
+  enable = true;
+  url = "https://cache.example.com";
+  cache = "main";
+  tokenFile = "/run/secrets/helios-push-token";
+};
+```
+
+`overlays.default` adds `pkgs.helios`. `nix flake check` runs a VM test of
+all of the above: push, signed substitution, sandboxing, metrics, backups,
+a scrub that catches a corrupted NAR, watch-store, eviction and shutdown.
 
 ## Reverse proxy and zero-copy downloads
 
@@ -178,8 +207,52 @@ Admin endpoints (bearer admin secret): `GET/POST /_api/v2/admin/caches`,
 ## Garbage collection
 
 Every `--gc-interval-hours`, the server removes stale temp uploads, blobs no
-path references (after a one-hour grace period, so an upload is never
+path references (once past `--upload-grace-seconds`, so an upload is never
 collected before it is published), expired tokens, and old audit log rows.
+
+## Maintenance
+
+helios-daemon keeps a cache healthy without touching the database itself:
+it decides what to do and asks the server, over the Unix socket given to
+the server as `--admin-socket`, so the server's in-memory index always
+agrees with SQLite. The socket's permissions are its access control.
+
+- **Auto-GC.** With `--quota`, stored NARs are kept under that size.
+  Eviction starts above `--quota-high` (0.9) and removes the least recently
+  used paths down to `--quota-low` (0.8). Recency comes from narinfo hits,
+  which the server records in memory and flushes once a minute.
+  `--min-free` also evicts while the disk is short on space. NARs another
+  path still uses stay, and an evicted NAR is deleted once its upload grace
+  period has passed.
+- **Integrity scrub.** Every `--scrub-interval` (7d), every NAR is read at up
+  to `--scrub-rate` (64M per second), then decompressed and re-hashed. A
+  missing or corrupt NAR is quarantined, which unpublishes its paths, so no
+  client downloads bad data.
+- **SQLite.** WAL checkpoints (`--checkpoint-interval`, 15m), `PRAGMA
+  optimize` (`--optimize-interval`, 1d) and online backups to
+  `<data-dir>/backups` (`--backup-interval`, 1d; `--backup-keep`, 7).
+- **Metrics.** `--metrics-listen` serves Prometheus metrics:
+  - cache paths, NAR bytes, and narinfo hits and misses;
+  - uploads;
+  - auto-GC, scrub and backup results;
+  - disk space.
+
+Intervals take a unit (`30s`, `5m`, `24h`, `7d`) and sizes an optional
+binary suffix (`64M`, `500G`). A failed run is logged, counted in
+`helios_maintenance_errors_total`, and retried on the next tick.
+
+The maintenance API (`/v1/stats`, `/v1/lru`, `/v1/evict`, `/v1/blobs`,
+`/v1/quarantine`, `/v1/gc`, `/v1/db/checkpoint`, `/v1/db/optimize`,
+`/v1/db/backup`) is internal and may change between versions.
+
+## Watch-store
+
+On a build machine, `helios queue-paths` works as Nix's `post-build-hook`.
+It spools each build's outputs and returns at once, so builds never wait on
+the network. `helios watch-store <cache>` pushes the spooled closures and
+retries with backoff while the server is unreachable. Both take `--spool`,
+and the CLI accepts `--url` with `--token-file` (or `HELIOS_URL` and
+`HELIOS_TOKEN`) instead of a saved login.
 
 ## Benchmarks
 

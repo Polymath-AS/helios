@@ -10,7 +10,9 @@ compression, narinfo and signing.
 pkg/          Zig packages: nix-base32, nix-store-path, nix-archive,
               nix-narinfo, nix-derivation, nix-flake-lock
 core/         libhelios: C ABI over pkg/*, built as a static library
-crates/       helios-core (Rust bindings), helios-server, helios-cli
+crates/       helios-core (Rust bindings), helios-server, helios-cli,
+              helios-daemon (auto-GC, scrub, backups, metrics)
+nix/          NixOS module (services.helios) and its VM test
 bench/        benchmarks against Cachix's Nix libraries and Nix C++
 scripts/      e2e.sh (end-to-end test), test-zig.sh (Zig unit tests)
 ```
@@ -62,7 +64,8 @@ nix.settings = {
 };
 ```
 
-On NixOS, use the flake's `nixosModules.default` (`services.helios`).
+On NixOS, use the flake's `nixosModules.default` (`services.helios`): the
+server, the maintenance daemon, and push-on-build for build machines.
 
 See [docs.md](docs.md) for the NixOS module, configuration, private caches,
 the HTTP API and deployment behind a reverse proxy.
