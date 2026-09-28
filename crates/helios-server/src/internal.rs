@@ -89,6 +89,7 @@ async fn stats(State(st): State<Shared>) -> ApiResult<Json<Value>> {
 }
 
 /// Least recently accessed paths first, with the size of their NAR.
+/// Pinned paths and their closures are never candidates.
 async fn lru(State(st): State<Shared>, uri: Uri) -> ApiResult<Json<Value>> {
     let limit = param(&uri, "limit").unwrap_or(500).clamp(1, 10_000);
     let paths = blocking(move || {
@@ -96,21 +97,32 @@ async fn lru(State(st): State<Shared>, uri: Uri) -> ApiResult<Json<Value>> {
         crate::gc::flush_access(&st).map_err(internal)?;
         st.db
             .read(|conn| {
+                let protected = crate::pins::protected(conn)?;
+                // No LIMIT: rows stream, and pinned ones are skipped until
+                // enough candidates are found.
                 let mut stmt = conn.prepare_cached(
                     "SELECT p.cache_id, p.hash, p.store_path, p.accessed_at, b.file_size
-                     FROM paths p JOIN blobs b ON b.id = p.blob_id ORDER BY p.accessed_at, p.id LIMIT ?1",
+                     FROM paths p JOIN blobs b ON b.id = p.blob_id ORDER BY p.accessed_at, p.id",
                 )?;
-                stmt.query_map([limit], |r| {
+                let mut rows = stmt.query([])?;
+                let mut out = Vec::new();
+                while out.len() < limit
+                    && let Some(r) = rows.next()?
+                {
+                    let cache: u32 = r.get(0)?;
                     let hash: Vec<u8> = r.get(1)?;
-                    Ok(json!({
-                        "cache": r.get::<_, u32>(0)?,
+                    if <[u8; 20]>::try_from(hash.as_slice()).is_ok_and(|hash| protected.contains(&PathKey { cache, hash })) {
+                        continue;
+                    }
+                    out.push(json!({
+                        "cache": cache,
                         "hash": helios_core::nix32_encode(&hash),
                         "storePath": r.get::<_, String>(2)?,
                         "accessedAt": r.get::<_, i64>(3)?,
                         "narBytes": r.get::<_, u64>(4)?,
-                    }))
-                })?
-                .collect::<rusqlite::Result<Vec<_>>>()
+                    }));
+                }
+                Ok(out)
             })
             .map_err(internal)
     })
@@ -137,9 +149,10 @@ fn forget(st: &Shared, keys: &[PathKey]) {
     }
 }
 
-/// Deletes paths, then any blobs that no longer back a path.
+/// Deletes paths, then any blobs that no longer back a path. Pinned paths
+/// are kept, even when asked for: a pin may be newer than the candidate list.
 async fn evict(State(st): State<Shared>, Json(req): Json<EvictReq>) -> ApiResult<Json<Value>> {
-    let keys: Vec<PathKey> = req
+    let mut keys: Vec<PathKey> = req
         .paths
         .iter()
         .map(|p| helios_core::nix32_decode::<20>(&p.hash).map(|hash| PathKey { cache: p.cache, hash }))
@@ -148,6 +161,8 @@ async fn evict(State(st): State<Shared>, Json(req): Json<EvictReq>) -> ApiResult
     blocking(move || {
         let evicted = st.db.write(|conn| -> rusqlite::Result<usize> {
             let tx = conn.transaction()?;
+            let protected = crate::pins::protected(&tx)?;
+            keys.retain(|k| !protected.contains(k));
             let mut n = 0;
             {
                 let mut del = tx.prepare_cached("DELETE FROM paths WHERE cache_id = ?1 AND hash = ?2")?;

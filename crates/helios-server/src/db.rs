@@ -66,6 +66,17 @@ ALTER TABLE paths ADD COLUMN accessed_at INTEGER NOT NULL DEFAULT 0;
 UPDATE paths SET accessed_at = created_at;
 CREATE INDEX paths_accessed ON paths (accessed_at);
 "#,
+    // Paths auto-GC must keep, with their closures.
+    r#"
+CREATE TABLE pins (
+    cache_id INTEGER NOT NULL REFERENCES caches (id),
+    hash BLOB NOT NULL,
+    store_path TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    created_by TEXT NOT NULL,
+    PRIMARY KEY (cache_id, hash)
+);
+"#,
 ];
 
 const PRAGMAS: &str = "

@@ -84,6 +84,19 @@ impl Client {
         self.call(Method::PUT, &format!("/caches/{cache}/nar?compression=zstd"), Some("application/x-nix-nar"), body).await
     }
 
+    pub async fn pin(&self, cache: &str, store_paths: &[String]) -> anyhow::Result<Value> {
+        self.post(&format!("/caches/{cache}/pins"), &json!({ "storePaths": store_paths })).await
+    }
+
+    pub async fn unpin(&self, cache: &str, store_path: &str) -> anyhow::Result<Value> {
+        let base = store_path.strip_prefix("/nix/store/").unwrap_or(store_path);
+        self.call(Method::DELETE, &format!("/caches/{cache}/pins/{base}"), None, transport::full(Bytes::new())).await
+    }
+
+    pub async fn pins(&self, cache: &str) -> anyhow::Result<Value> {
+        self.call(Method::GET, &format!("/caches/{cache}/pins"), None, transport::full(Bytes::new())).await
+    }
+
     pub async fn cache_info(&self, cache: &str) -> anyhow::Result<crate::substituter::CacheInfo> {
         self.call(Method::GET, &format!("/caches/{cache}"), None, transport::full(Bytes::new())).await
     }

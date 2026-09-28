@@ -154,7 +154,7 @@ pkgs.testers.runNixOSTest {
 
     with subtest("daemon: metrics, backups, scrub"):
         server.wait_until_succeeds("curl -sf http://127.0.0.1:9120/metrics | grep -qx 'helios_up 1'")
-        assert int(metric('helios_cache_paths').split()[-1]) > 0
+        assert int(metric('helios_cache_paths{cache="main"}').split()[-1]) > 0
         server.wait_until_succeeds("test $(ls /srv/helios/backups | wc -l) -eq 2", timeout=60)
         # Corrupt a dependency's NAR; the scrub must take it out of service.
         url = client.succeed(f"curl -sf {narinfo_url('${pkgs.glibc}')} | sed -n 's/^URL: nar\\///p'").strip()
@@ -168,15 +168,23 @@ pkgs.testers.runNixOSTest {
         built = client.succeed("nix-build /etc/watched.nix --no-out-link").strip()
         client.wait_until_succeeds(f"curl -sf {narinfo_url(built)}", timeout=60)
 
-    with subtest("auto-gc evicts least recently used paths"):
-        before = int(metric('helios_cache_paths').split()[-1])
+    with subtest("auto-gc evicts least recently used paths, except pinned closures"):
+        # The scrub unpublished glibc; a re-push restores the whole closure,
+        # which --pin then protects.
+        client.succeed("helios push main --closure --pin ${pkgs.hello}")
+        client.succeed(f"curl -sf {narinfo_url('${pkgs.glibc}')}")
+        pinned = client.succeed("nix-store -qR ${pkgs.hello}").split()
+        before = int(metric('helios_cache_paths{cache="main"}').split()[-1])
         server.succeed(
             "sudo -u helios-daemon timeout 5 ${helios}/bin/helios-daemon "
             "--socket /run/helios-admin/admin.sock --data-dir /srv/helios "
             "--quota 1K --gc-interval 1s --scrub-interval 0 --backup-interval 0 || test $? -eq 124"
         )
-        after = int(metric('helios_cache_paths').split()[-1])
+        after = int(metric('helios_cache_paths{cache="main"}').split()[-1])
         assert after < before, (before, after)
+        for p in pinned:
+            client.succeed(f"curl -sf http://server/main/{p[11:43]}.narinfo")
+        assert after == len(pinned), (after, pinned)
 
     with subtest("SIGTERM shuts down cleanly"):
         server.succeed("systemctl stop helios-daemon helios")

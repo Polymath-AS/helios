@@ -7,6 +7,7 @@ mod db;
 mod error;
 mod gc;
 mod internal;
+mod pins;
 mod push;
 mod read;
 mod state;
@@ -39,6 +40,8 @@ pub fn router(st: Shared) -> Router {
         .route("/caches/{cache}/missing", post(push::missing))
         .route("/caches/{cache}/nars/known", post(push::known))
         .route("/caches/{cache}/nar", put(push::upload).layer(DefaultBodyLimit::disable()))
+        .route("/caches/{cache}/pins", get(pins::list).post(pins::add))
+        .route("/caches/{cache}/pins/{path}", axum::routing::delete(pins::remove))
         .route("/caches/{cache}/uploads", post(chunked::create))
         .route("/caches/{cache}/uploads/{id}", get(chunked::status).patch(chunked::append).delete(chunked::abort))
         .route("/caches/{cache}/uploads/{id}/complete", post(chunked::complete))

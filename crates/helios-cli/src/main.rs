@@ -48,6 +48,10 @@ enum Command {
         /// zstd compression level (1-19).
         #[arg(long, default_value_t = 3, value_parser = clap::value_parser!(i32).range(1..=19))]
         level: i32,
+        /// Pin the given paths afterwards, so auto-GC keeps them and their
+        /// closures.
+        #[arg(long)]
+        pin: bool,
         /// Upload NARs in chunks of this many MiB, for proxies that cap
         /// request bodies (Cloudflare, Cloud Run). 0 sends each NAR in one
         /// request; so does a NAR that fits in one chunk.
@@ -72,6 +76,21 @@ enum Command {
         #[arg(long, default_value_t = 32, value_parser = clap::value_parser!(u64).range(0..=64))]
         chunk_size: u64,
     },
+    /// Protect store paths, with their closures in the cache, from auto-GC.
+    Pin {
+        cache: String,
+        /// Store paths, or installables to resolve with Nix.
+        #[arg(required = true)]
+        paths: Vec<String>,
+    },
+    /// Remove pins.
+    Unpin {
+        cache: String,
+        #[arg(required = true)]
+        paths: Vec<String>,
+    },
+    /// List a cache's pins.
+    Pins { cache: String },
     /// Configure Nix to substitute from a cache: its URL, signing key and,
     /// for a private cache, this login's token in netrc.
     Use {
@@ -164,9 +183,20 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
     let client = api::Client::new(&server)?;
     match cli.command {
         Command::Login { .. } | Command::QueuePaths { .. } => unreachable!(),
-        Command::Push { cache, installables, closure, jobs, level, chunk_size } => {
+        Command::Push { cache, installables, closure, jobs, level, chunk_size, pin } => {
             push::push(&client, &cache, &installables, push::Options { jobs, level, closure, chunk_size: (chunk_size << 20) as usize }).await?;
+            if pin {
+                pin_paths(&client, &cache, &installables).await?;
+            }
         }
+        Command::Pin { cache, paths } => pin_paths(&client, &cache, &paths).await?,
+        Command::Unpin { cache, paths } => {
+            for path in store_paths(&paths).await? {
+                client.unpin(&cache, &path).await?;
+                tracing::info!("unpinned {path}");
+            }
+        }
+        Command::Pins { cache } => print(&client.pins(&cache).await?),
         Command::Use { cache, print } => {
             let plan = substituter::plan(&client, &server, &cache).await?;
             if print { plan.print() } else { plan.apply()? }
@@ -211,4 +241,19 @@ fn main() {
         tracing::error!("{e:#}");
         std::process::exit(1);
     }
+}
+
+/// Store paths as given, or resolved by Nix when any is an installable.
+async fn store_paths(args: &[String]) -> anyhow::Result<Vec<String>> {
+    if args.iter().all(|a| a.starts_with("/nix/store/")) {
+        return Ok(args.to_vec());
+    }
+    Ok(nix::path_infos(args, false).await?.into_iter().map(|i| i.path).collect())
+}
+
+async fn pin_paths(client: &api::Client, cache: &str, args: &[String]) -> anyhow::Result<()> {
+    let paths = store_paths(args).await?;
+    let r = client.pin(cache, &paths).await?;
+    tracing::info!("pinned {} paths in '{cache}' ({} already were)", r["pinned"], r["alreadyPinned"]);
+    Ok(())
 }

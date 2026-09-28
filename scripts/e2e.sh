@@ -44,7 +44,8 @@ HELIOS_LOG=warn,helios_server=debug "$BIN/helios-server" 2>"$WORK/server.log" \
   --data-dir "$WORK/data" \
   --signing-key-file "$WORK/key" \
   --jwt-secret-file "$WORK/jwt" \
-  --admin-secret-file "$WORK/admin" &
+  --admin-secret-file "$WORK/admin" \
+  --admin-socket "$WORK/admin.sock" &
 SERVER_PID=$!
 for _ in $(seq 50); do curl -sf "$URL/healthz" >/dev/null && break; sleep 0.1; done
 
@@ -143,6 +144,19 @@ nix store verify --no-contents --store "$URL/secret" "$TARGET" && check "nix rea
 check "and not without it" fails "$(XDG_CONFIG_HOME="$WORK/empty" nix store verify --no-contents --store "$URL/secret" "$TARGET" >/dev/null 2>&1 || echo fails)"
 check "--print shows system-wide settings" 1 "$(helios use secret --print | grep -c "^machine 127.0.0.1 *\$")"
 helios login ci "$URL" "$PUSH_TOKEN" >/dev/null 2>&1
+
+echo "=== pins"
+# Auto-GC takes its candidates from /v1/lru; main is cache 1, chunked cache 3.
+lru_count() { curl -s --unix-socket "$WORK/admin.sock" "http://x/v1/lru?limit=10000" | jq --argjson c "$1" --argjson closure "$(nix-store -qR "$TARGET" | jq -R . | jq -s .)" '[.paths[] | select(.cache == $c and ((.storePath | if startswith("/nix/store/") then . else "/nix/store/" + . end) as $p | $closure | index($p)))] | length'; }
+check "the closure starts as a GC candidate" "$CLOSURE_SIZE" "$(lru_count 1)"
+helios pin main "$TARGET" 2>/dev/null
+check "pins are listed" "$TARGET" "$(helios pins main | jq -r '.pins[0].storePath')"
+check "a pinned closure is not a GC candidate" 0 "$(lru_count 1)"
+check "the same paths in another cache still are" "$CLOSURE_SIZE" "$(lru_count 3)"
+check "pull-only token cannot pin" 403 "$(status -X POST -H "authorization: Bearer $PULL_ONLY" -H 'content-type: application/json' -d "{\"storePaths\":[\"$TARGET\"]}" "$URL/_api/v2/caches/secret/pins")"
+check "invalid pin rejected" 400 "$(status -X POST "${AUTH[@]}" -H 'content-type: application/json' -d '{"storePaths":["/etc/passwd"]}' "$URL/_api/v2/caches/main/pins")"
+helios unpin main "$TARGET" 2>/dev/null
+check "unpinned closure is a candidate again" "$CLOSURE_SIZE" "$(lru_count 1)"
 
 echo "=== abuse"
 check "garbage upload rejected" 400 "$(status -X PUT -H "authorization: Bearer $PUSH_TOKEN" --data-binary 'not a zstd stream' "$URL/_api/v2/caches/main/nar")"

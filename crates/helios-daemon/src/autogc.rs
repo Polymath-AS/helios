@@ -116,6 +116,9 @@ pub async fn run(d: &Daemon, policy: &Policy) -> anyhow::Result<()> {
             break;
         }
     }
+    if need > 0 {
+        tracing::warn!(need, "cannot free enough: what is left is pinned, or shared with paths still in use");
+    }
     add(&d.metrics.gc_evicted_paths, evicted);
     add(&d.metrics.gc_freed_bytes, freed);
     tracing::info!(paths = evicted, freed_now = freed, "evicted (the rest is freed after the upload grace period)");

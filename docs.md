@@ -294,6 +294,10 @@ to the token that started it, is dropped after an hour without a chunk or
 after an invalid one, and does not survive a server restart (the client
 then starts that NAR again).
 
+Pin endpoints: `GET /_api/v2/caches/<cache>/pins` (`pull`), `POST
+/_api/v2/caches/<cache>/pins` with `{"storePaths": [...]}` and `DELETE
+/_api/v2/caches/<cache>/pins/<store path basename>` (`push`).
+
 Admin endpoints (bearer admin secret): `GET/POST /_api/v2/admin/caches`,
 `GET/POST /_api/v2/admin/tokens`, `POST /_api/v2/admin/tokens/<jti>/revoke`.
 
@@ -317,6 +321,7 @@ agrees with SQLite. The socket's permissions are its access control.
   `--min-free` also evicts while the disk is short on space. NARs another
   path still uses stay, and an evicted NAR is deleted once its upload grace
   period has passed.
+  Pinned paths stay too; see [Pins](#pins).
 - **Integrity scrub.** Every `--scrub-interval` (7d), every NAR is read at up
   to `--scrub-rate` (64M per second), then decompressed and re-hashed. A
   missing or corrupt NAR is quarantined, which unpublishes its paths, so no
@@ -337,6 +342,28 @@ binary suffix (`64M`, `500G`). A failed run is logged, counted in
 The maintenance API (`/v1/stats`, `/v1/lru`, `/v1/evict`, `/v1/blobs`,
 `/v1/quarantine`, `/v1/gc`, `/v1/db/checkpoint`, `/v1/db/optimize`,
 `/v1/db/backup`) is internal and may change between versions.
+
+## Pins
+
+A pin keeps a store path and its closure in a cache through auto-GC, for
+releases or systems that must stay substitutable however rarely they are
+fetched:
+
+```bash
+helios push main --closure --pin .#nixosConfigurations.host.config.system.build.toplevel
+helios pin main /nix/store/...-release    # or an installable
+helios pins main
+helios unpin main /nix/store/...-release
+```
+
+The closure is followed through the References of the published narinfo
+when auto-GC runs, so dependencies pushed after the pin are protected too.
+It stops at a dependency the cache does not have: pin after pushing the
+closure (as `--pin` does). Pinning and unpinning need `push` on the cache,
+listing needs `pull`. Pins only hold back eviction: the integrity scrub
+still unpublishes a corrupt NAR, and pushing the closure again restores it.
+When what is left over quota is pinned, the daemon logs that it cannot
+free enough.
 
 ## Watch-store
 
