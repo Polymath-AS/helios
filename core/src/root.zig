@@ -83,11 +83,12 @@ export fn hl_store_basename_valid(base: [*]const u8, len: usize) bool {
 pub const DumpOptions = extern struct {
     level: c_int,
     threads: c_int,
-    size_hint: u64,
+    nar_size: u64,
+    window_log: c_int,
 };
 
 fn sinkOptions(opts: *const DumpOptions) archive.Options {
-    return .{ .level = opts.level, .threads = opts.threads, .size_hint = opts.size_hint };
+    return .{ .level = opts.level, .threads = opts.threads, .nar_size = opts.nar_size, .window_log = opts.window_log };
 }
 
 export fn hl_nar_dump(path: [*:0]const u8, opts: *const DumpOptions, write: WriteFn, ctx: ?*anyopaque, out: *Digest) c_int {

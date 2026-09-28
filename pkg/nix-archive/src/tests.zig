@@ -1,5 +1,6 @@
 const std = @import("std");
 const Sink = @import("sink.zig").Sink;
+const Options = @import("sink.zig").Options;
 const Verifier = @import("verify.zig").Verifier;
 
 const Collect = struct {
@@ -21,13 +22,20 @@ fn fakeNar(a: std.mem.Allocator, body_len: usize) ![]u8 {
 }
 
 fn roundTrip(level: c_int, threads: c_int, body_len: usize) !void {
+    try roundTripWith(.{ .level = level, .threads = threads }, body_len, false);
+}
+
+fn roundTripWith(options: Options, body_len: usize, pledge: bool) !void {
+    const level = options.level;
     const a = std.testing.allocator;
     const nar = try fakeNar(a, body_len);
     defer a.free(nar);
 
+    var opts = options;
+    if (pledge) opts.nar_size = nar.len;
     var out: Collect = .{};
     defer out.list.deinit(a);
-    var sink = try Sink.init(a, .{ .level = level, .threads = threads }, Collect.write, &out);
+    var sink = try Sink.init(a, opts, Collect.write, &out);
     defer sink.deinit(a);
     // Uneven writes exercise the buffering paths.
     var off: usize = 0;
@@ -63,6 +71,27 @@ test "compress then verify round-trips" {
     try roundTrip(3, 0, 3 << 20);
     try roundTrip(1, 4, 9 << 20);
     try roundTrip(0, 0, 5000);
+}
+
+test "long-distance matching with an exact pledged size round-trips" {
+    try roundTripWith(.{ .level = 3, .window_log = 27 }, 3 << 20, true);
+    try roundTripWith(.{ .level = 9, .threads = 4, .window_log = 27 }, 9 << 20, true);
+    try roundTripWith(.{ .level = 3 }, 1000, true);
+}
+
+test "a pledged size the stream does not match fails" {
+    const a = std.testing.allocator;
+    var out: Collect = .{};
+    defer out.list.deinit(a);
+    var sink = try Sink.init(a, .{ .nar_size = 10 }, Collect.write, &out);
+    defer sink.deinit(a);
+    try sink.write("only five");
+    try std.testing.expectError(error.Zstd, sink.finish());
+}
+
+test "an out-of-range window is refused" {
+    var out: Collect = .{};
+    try std.testing.expectError(error.Zstd, Sink.init(std.testing.allocator, .{ .window_log = 28 }, Collect.write, &out));
 }
 
 test "verifier rejects truncated and non-NAR input" {

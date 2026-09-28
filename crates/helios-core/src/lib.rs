@@ -22,7 +22,8 @@ mod sys {
     pub struct DumpOptions {
         pub level: c_int,
         pub threads: c_int,
-        pub size_hint: u64,
+        pub nar_size: u64,
+        pub window_log: c_int,
     }
 
     #[repr(C)]
@@ -157,19 +158,23 @@ pub struct DumpOptions {
     pub level: i32,
     /// zstd worker threads; 0 compresses on the calling thread.
     pub threads: i32,
-    /// Expected NAR size, 0 if unknown.
-    pub size_hint: u64,
+    /// The exact NAR size, 0 if unknown. zstd fits its window to it and
+    /// records it in the frame; a stream of another length fails.
+    pub nar_size: u64,
+    /// 0 keeps the level's window; 10-27 enables long-distance matching
+    /// with a 2^window_log window.
+    pub window_log: i32,
 }
 
 impl Default for DumpOptions {
     fn default() -> Self {
-        Self { level: 3, threads: 0, size_hint: 0 }
+        Self { level: 3, threads: 0, nar_size: 0, window_log: 0 }
     }
 }
 
 impl DumpOptions {
     fn raw(&self) -> sys::DumpOptions {
-        sys::DumpOptions { level: self.level, threads: self.threads, size_hint: self.size_hint }
+        sys::DumpOptions { level: self.level, threads: self.threads, nar_size: self.nar_size, window_log: self.window_log }
     }
 }
 
@@ -317,33 +322,39 @@ impl Signer {
 
     /// A new Nix secret key named `name`, in `nix key generate-secret` format.
     pub fn generate(name: &str) -> Result<String, Error> {
-        let mut buf = vec![0u8; 256];
-        let mut len = 0usize;
-        check(unsafe { sys::hl_signer_generate(name.as_ptr(), name.len(), buf.as_mut_ptr(), buf.len(), &mut len) })?;
-        buf.truncate(len);
+        // The name, ':' and 88 base64 characters: one call, so one key.
+        let buf = out_string(name.len() + 89, |out, cap, len| unsafe { sys::hl_signer_generate(name.as_ptr(), name.len(), out, cap, len) })?;
         Ok(String::from_utf8(buf).expect("key name was valid UTF-8"))
     }
 
     /// `<name>:<base64>`, the value for `trusted-public-keys`.
     pub fn public_key(&self) -> String {
-        let mut buf = vec![0u8; 256];
-        let mut len = 0usize;
-        let rc = unsafe { sys::hl_signer_public_key(self.raw, buf.as_mut_ptr(), buf.len(), &mut len) };
-        assert_eq!(rc, 0, "public key fits in 256 bytes");
-        buf.truncate(len);
+        let buf = out_string(128, |out, cap, len| unsafe { sys::hl_signer_public_key(self.raw, out, cap, len) }).expect("public key renders");
         String::from_utf8(buf).expect("key name was valid UTF-8")
     }
 
     /// A detached signature over `msg`, as `<name>:<base64>`.
     pub fn sign(&self, msg: &[u8]) -> String {
-        // Room for the key name (as in public_key) plus 88 base64 characters.
-        let mut buf = vec![0u8; 512];
-        let mut len = 0usize;
-        let rc = unsafe { sys::hl_signer_sign(self.raw, msg.as_ptr(), msg.len(), buf.as_mut_ptr(), buf.len(), &mut len) };
-        assert_eq!(rc, 0, "signature fits in 512 bytes");
-        buf.truncate(len);
+        let buf = out_string(160, |out, cap, len| unsafe { sys::hl_signer_sign(self.raw, msg.as_ptr(), msg.len(), out, cap, len) })
+            .expect("signing succeeds");
         String::from_utf8(buf).expect("key name was valid UTF-8")
     }
+}
+
+/// Calls `f` with a buffer of `cap` bytes, and once more with the length it
+/// asked for if that was too small: the key name has no fixed bound.
+fn out_string(cap: usize, f: impl Fn(*mut u8, usize, &mut usize) -> c_int) -> Result<Vec<u8>, Error> {
+    const HL_E_BUFFER: c_int = -11;
+    let mut buf = vec![0u8; cap];
+    let mut len = 0usize;
+    let mut rc = f(buf.as_mut_ptr(), buf.len(), &mut len);
+    if rc == HL_E_BUFFER {
+        buf.resize(len, 0);
+        rc = f(buf.as_mut_ptr(), buf.len(), &mut len);
+    }
+    check(rc)?;
+    buf.truncate(len);
+    Ok(buf)
 }
 
 impl Drop for Signer {
@@ -526,6 +537,14 @@ mod tests {
     }
 
     #[test]
+    fn long_key_names_fit() {
+        let name = "k".repeat(600);
+        let signer = Signer::new(&Signer::generate(&name).unwrap()).unwrap();
+        assert_eq!(signer.public_key().len(), name.len() + 1 + 44);
+        assert_eq!(signer.sign(b"msg").len(), name.len() + 1 + 88);
+    }
+
+    #[test]
     fn dump_matches_compressor_and_verifier() {
         let dir = TempDir::new();
         let root = dir.path().join("pkg");
@@ -536,7 +555,7 @@ mod tests {
         std::os::unix::fs::symlink("bin/hello", root.join("link")).unwrap();
 
         let mut compressed = Vec::new();
-        let digest = dump_nar(&root, &DumpOptions { level: 3, threads: 2, size_hint: 0 }, |c| {
+        let digest = dump_nar(&root, &DumpOptions { level: 3, threads: 2, ..Default::default() }, |c| {
             compressed.extend_from_slice(c);
             true
         })
@@ -573,7 +592,7 @@ mod tests {
         let hashes = String::from_utf8(hashes.stdout).unwrap();
         for (path, expected) in paths.iter().zip(hashes.lines()) {
             let digest =
-                dump_nar(Path::new(path), &DumpOptions { level: 1, threads: 0, size_hint: 0 }, |_| true).unwrap_or_else(|e| panic!("{path}: {e}"));
+                dump_nar(Path::new(path), &DumpOptions { level: 1, ..Default::default() }, |_| true).unwrap_or_else(|e| panic!("{path}: {e}"));
             assert_eq!(format!("sha256:{}", nix32_encode(&digest.nar_hash)), expected, "{path}");
         }
     }

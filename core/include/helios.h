@@ -46,7 +46,8 @@ typedef struct {
 typedef struct {
     int level;          /* zstd level; 0 disables compression */
     int threads;        /* zstd worker threads; 0 = calling thread */
-    uint64_t size_hint; /* expected NAR size, 0 if unknown */
+    uint64_t nar_size;  /* exact NAR size, pledged to zstd; 0 if unknown */
+    int window_log;     /* 0: the level's window; 10-27: long-distance matching */
 } hl_dump_options;
 
 /* Return non-zero to abort the pipeline with HL_E_ABORTED. */

@@ -18,8 +18,8 @@ pub const OutBuffer = extern struct {
 pub const c_compressionLevel: c_int = 100;
 pub const c_checksumFlag: c_int = 201;
 pub const c_nbWorkers: c_int = 400;
-/// ZSTD_c_srcSizeHint (experimental, stable since 1.4.x).
-pub const c_srcSizeHint: c_int = 1004;
+pub const c_windowLog: c_int = 101;
+pub const c_enableLongDistanceMatching: c_int = 160;
 
 pub const e_continue: c_int = 0;
 pub const e_end: c_int = 2;
@@ -28,6 +28,7 @@ pub extern "c" fn ZSTD_createCCtx() ?*CCtx;
 pub extern "c" fn ZSTD_freeCCtx(cctx: ?*CCtx) usize;
 pub extern "c" fn ZSTD_CCtx_setParameter(cctx: *CCtx, param: c_int, value: c_int) usize;
 pub extern "c" fn ZSTD_compressStream2(cctx: *CCtx, output: *OutBuffer, input: *InBuffer, end_op: c_int) usize;
+pub extern "c" fn ZSTD_CCtx_setPledgedSrcSize(cctx: *CCtx, pledged_src_size: c_ulonglong) usize;
 pub extern "c" fn ZSTD_CStreamOutSize() usize;
 
 pub extern "c" fn ZSTD_createDCtx() ?*DCtx;

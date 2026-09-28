@@ -23,8 +23,15 @@ pub const Options = struct {
     level: c_int = 3,
     /// zstd worker threads; 0 compresses on the calling thread.
     threads: c_int = 0,
-    /// Expected NAR size, 0 when unknown. Lets zstd size its tables.
-    size_hint: u64 = 0,
+    /// The exact NAR size, 0 when unknown. It is pledged to zstd, which then
+    /// sizes its window to the NAR and records the size in the frame, so a
+    /// decoder allocates no more than the NAR needs. A stream of another
+    /// length fails.
+    nar_size: u64 = 0,
+    /// 0 keeps the level's window. Otherwise long-distance matching with a
+    /// window of 2^window_log bytes (at most 27, the largest a stock Nix
+    /// decoder accepts), which finds repeats across a large NAR.
+    window_log: c_int = 0,
 };
 
 const in_capacity = 1 << 20;
@@ -53,17 +60,23 @@ pub const Sink = struct {
         errdefer allocator.free(in_buf);
 
         var cctx: ?*zstd.CCtx = null;
+        // At function scope so a failed out_buf allocation frees it too.
+        errdefer _ = zstd.ZSTD_freeCCtx(cctx);
         var out_len: usize = 0;
         if (options.level != 0) {
             cctx = zstd.ZSTD_createCCtx() orelse return error.OutOfMemory;
-            errdefer _ = zstd.ZSTD_freeCCtx(cctx);
             if (zstd.isError(zstd.ZSTD_CCtx_setParameter(cctx.?, zstd.c_compressionLevel, options.level))) return error.Zstd;
-            if (options.threads > 0 and (options.size_hint == 0 or options.size_hint >= multithread_threshold)) {
+            if (options.threads > 0 and (options.nar_size == 0 or options.nar_size >= multithread_threshold)) {
                 // Fails harmlessly on a single-threaded libzstd build.
                 _ = zstd.ZSTD_CCtx_setParameter(cctx.?, zstd.c_nbWorkers, options.threads);
             }
-            if (options.size_hint > 0 and options.size_hint <= std.math.maxInt(c_int)) {
-                _ = zstd.ZSTD_CCtx_setParameter(cctx.?, zstd.c_srcSizeHint, @intCast(options.size_hint));
+            if (options.window_log != 0) {
+                if (options.window_log < 10 or options.window_log > 27) return error.Zstd;
+                if (zstd.isError(zstd.ZSTD_CCtx_setParameter(cctx.?, zstd.c_enableLongDistanceMatching, 1))) return error.Zstd;
+                if (zstd.isError(zstd.ZSTD_CCtx_setParameter(cctx.?, zstd.c_windowLog, options.window_log))) return error.Zstd;
+            }
+            if (options.nar_size > 0) {
+                if (zstd.isError(zstd.ZSTD_CCtx_setPledgedSrcSize(cctx.?, options.nar_size))) return error.Zstd;
             }
             out_len = zstd.ZSTD_CStreamOutSize();
         }
