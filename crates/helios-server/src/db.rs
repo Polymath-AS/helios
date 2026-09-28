@@ -5,7 +5,7 @@ use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use parking_lot::Mutex;
+use std::sync::{Mutex, PoisonError};
 use rusqlite::{Connection, OpenFlags};
 
 const MIGRATIONS: &[&str] = &[r#"
@@ -89,7 +89,7 @@ impl Db {
 
     /// Runs `f` on the writer connection. Blocking: call from spawn_blocking.
     pub fn write<T>(&self, f: impl FnOnce(&mut Connection) -> T) -> T {
-        f(&mut self.writer.lock())
+        f(&mut self.writer.lock().unwrap_or_else(PoisonError::into_inner))
     }
 
     /// Runs `f` on this thread's read-only connection. Blocking.

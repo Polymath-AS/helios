@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use helios_core::{Compression, Signer};
-use parking_lot::RwLock;
+use std::sync::{PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use rusqlite::params;
 use tokio::sync::mpsc;
 
@@ -109,7 +109,7 @@ impl AppState {
             Ok((caches, index, tokens))
         })?;
 
-        tracing::info!(caches = caches.len(), paths = index.len(), tokens = tokens.len(), "loaded state");
+        crate::log::info!("loaded state: {} caches, {} paths, {} tokens", caches.len(), index.len(), tokens.len());
         let narinfo = quick_cache::sync::Cache::with(
             cfg.narinfo_cache_entries,
             cfg.narinfo_cache_entries as u64,
@@ -130,7 +130,7 @@ impl AppState {
     }
 
     pub fn cache(&self, name: &str) -> Option<CacheInfo> {
-        self.caches.read().get(name).copied()
+        self.caches.rd().get(name).copied()
     }
 
     pub fn nar_path(&self, file_hash: &[u8; 32], compression: Compression) -> PathBuf {
@@ -155,8 +155,24 @@ impl AppState {
         })?;
         Ok(id.map(|id| {
             let info = CacheInfo { id, public };
-            self.caches.write().insert(name.into(), info);
+            self.caches.wr().insert(name.into(), info);
             info
         }))
+    }
+}
+
+/// Lock access that ignores poisoning: every critical section here leaves
+/// the data consistent, so a panic elsewhere must not wedge the server.
+pub trait Locked<T> {
+    fn rd(&self) -> RwLockReadGuard<'_, T>;
+    fn wr(&self) -> RwLockWriteGuard<'_, T>;
+}
+
+impl<T> Locked<T> for RwLock<T> {
+    fn rd(&self) -> RwLockReadGuard<'_, T> {
+        self.read().unwrap_or_else(PoisonError::into_inner)
+    }
+    fn wr(&self) -> RwLockWriteGuard<'_, T> {
+        self.write().unwrap_or_else(PoisonError::into_inner)
     }
 }

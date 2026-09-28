@@ -4,14 +4,11 @@
 use axum::http::{HeaderMap, header};
 use base64::Engine;
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
-use hmac::{KeyInit, Mac};
 use serde::{Deserialize, Serialize};
-use subtle::ConstantTimeEq;
 
+use crate::state::Locked;
 use crate::error::ApiError;
 use crate::state::{AppState, CacheInfo};
-
-type HmacSha256 = hmac::Hmac<sha2::Sha256>;
 
 pub const ISSUER: &str = "helios-cache";
 pub const AUDIENCE: &str = "helios-cache";
@@ -63,9 +60,7 @@ impl Identity {
 pub fn sign(claims: &Claims, secret: &[u8]) -> String {
     let payload = URL_SAFE_NO_PAD.encode(serde_json::to_vec(claims).expect("claims serialise"));
     let input = format!("{HEADER_B64}.{payload}");
-    let mut mac = HmacSha256::new_from_slice(secret).expect("HMAC accepts any key length");
-    mac.update(input.as_bytes());
-    let sig = URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes());
+    let sig = URL_SAFE_NO_PAD.encode(helios_core::hmac_sha256(secret, input.as_bytes()));
     format!("{input}.{sig}")
 }
 
@@ -79,9 +74,9 @@ fn verify(token: &str, secret: &[u8], now: i64) -> Option<Claims> {
         return None;
     }
     let sig = URL_SAFE_NO_PAD.decode(sig_b64).ok()?;
-    let mut mac = HmacSha256::new_from_slice(secret).ok()?;
-    mac.update(signed.as_bytes());
-    mac.verify_slice(&sig).ok()?;
+    if !helios_core::ct_eq(&helios_core::hmac_sha256(secret, signed.as_bytes()), &sig) {
+        return None;
+    }
 
     let claims: Claims = serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload_b64).ok()?).ok()?;
     let valid = !claims.jti.is_empty()
@@ -114,10 +109,8 @@ fn credential(headers: &HeaderMap) -> Option<String> {
 }
 
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    use sha2::Digest;
     // Hash first so the comparison does not leak the secret's length.
-    let (da, db) = (sha2::Sha256::digest(a), sha2::Sha256::digest(b));
-    da.as_slice().ct_eq(db.as_slice()).into()
+    helios_core::ct_eq(&helios_core::sha256(a), &helios_core::sha256(b))
 }
 
 impl AppState {
@@ -126,7 +119,7 @@ impl AppState {
         let token = credential(headers).ok_or_else(ApiError::unauthorized)?;
         let now = crate::db::now();
         let claims = verify(&token, secret, now).ok_or_else(ApiError::unauthorized)?;
-        match self.tokens.read().get(claims.jti.as_str()) {
+        match self.tokens.rd().get(claims.jti.as_str()) {
             Some(t) if !t.revoked && t.expires_at > now => Ok(claims),
             _ => Err(ApiError::unauthorized()),
         }

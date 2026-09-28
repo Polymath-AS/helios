@@ -31,7 +31,7 @@ impl ApiError {
     }
 
     pub fn internal(err: impl std::fmt::Display) -> Self {
-        tracing::error!(error = %err, "internal error");
+        crate::log::error!("internal error: {err}");
         Self::new(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
     }
 

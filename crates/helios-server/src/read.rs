@@ -10,6 +10,7 @@ use bytes::Bytes;
 use helios_core::Compression;
 use rusqlite::{OptionalExtension, params};
 
+use crate::state::Locked;
 use crate::error::{ApiError, ApiResult};
 use crate::state::{PathKey, Shared};
 
@@ -75,7 +76,7 @@ async fn serve(st: Shared, method: Method, uri: Uri, headers: HeaderMap) -> ApiR
                 return Ok(not_found(NEGATIVE));
             };
             let key = PathKey { cache: cache.id, hash };
-            if !st.index.read().contains(&key) {
+            if !st.index.rd().contains(&key) {
                 return Ok(not_found(if cache.public { NEGATIVE } else { PRIVATE }));
             }
             let body = match st.narinfo.get(&key) {
@@ -155,6 +156,16 @@ async fn nar_response(
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(not_found(NEGATIVE)),
         Err(e) => return Err(ApiError::internal(e)),
     };
-    let stream = tokio_util::io::ReaderStream::with_capacity(file, 512 * 1024);
+    // 512 KiB reads; the stream ends after EOF or the first error.
+    let stream = futures_util::stream::unfold(Some(file), |file| async move {
+        use tokio::io::AsyncReadExt;
+        let mut file = file?;
+        let mut buf = bytes::BytesMut::with_capacity(512 * 1024);
+        match file.read_buf(&mut buf).await {
+            Ok(0) => None,
+            Ok(_) => Some((Ok(buf.freeze()), Some(file))),
+            Err(e) => Some((Err(e), None)),
+        }
+    });
     builder.body(Body::from_stream(stream)).map_err(ApiError::internal)
 }

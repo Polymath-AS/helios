@@ -12,8 +12,8 @@ use std::rc::Rc;
 
 use axum::Json;
 use axum::body::Body;
-use axum::extract::{Path, Query, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::extract::{Path, State};
+use axum::http::{HeaderMap, StatusCode, Uri};
 use base64::Engine;
 use bytes::Bytes;
 use futures_util::StreamExt;
@@ -23,6 +23,7 @@ use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use crate::state::Locked;
 use crate::audit::Audit;
 use crate::auth::Perm;
 use crate::error::{ApiError, ApiResult};
@@ -54,7 +55,7 @@ pub async fn missing(
     if req.hashes.len() > MAX_MISSING_BATCH {
         return Err(ApiError::bad_request(format!("at most {MAX_MISSING_BATCH} hashes per request")));
     }
-    let index = st.index.read();
+    let index = st.index.rd();
     let missing: Vec<&String> = req
         .hashes
         .iter()
@@ -108,11 +109,6 @@ pub async fn known(
 
 // ── Upload ──
 
-#[derive(Deserialize)]
-pub struct UploadQuery {
-    compression: Option<String>,
-}
-
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UploadResp {
@@ -125,17 +121,18 @@ pub struct UploadResp {
 pub async fn upload(
     State(st): State<Shared>,
     Path(name): Path<String>,
-    Query(q): Query<UploadQuery>,
+    uri: Uri,
     audit: Audit,
     headers: HeaderMap,
     body: Body,
 ) -> ApiResult<(StatusCode, Json<UploadResp>)> {
     cache_for(&st, &name)?;
     let identity = st.authorize(&headers, &name, Perm::Push)?;
-    let compression = Compression::parse(q.compression.as_deref().unwrap_or("zstd"))
+    let requested = uri.query().unwrap_or("").split('&').find_map(|kv| kv.strip_prefix("compression=")).unwrap_or("zstd");
+    let compression = Compression::parse(requested)
         .ok_or_else(|| ApiError::bad_request("compression must be zstd or none"))?;
 
-    let tmp = st.tmp_dir().join(uuid::Uuid::new_v4().to_string());
+    let tmp = st.tmp_dir().join(helios_core::uuid_v4());
     let (tx, mut rx) = tokio::sync::mpsc::channel::<Bytes>(32);
     let worker_tmp = tmp.clone();
     // Disk writes, hashing and decompression happen off the async runtime.
@@ -344,7 +341,7 @@ pub async fn publish(
     let mut prepared = Vec::with_capacity(req.paths.len());
     let mut already = 0usize;
     {
-        let index = st.index.read();
+        let index = st.index.rd();
         for spec in req.paths {
             let p = prepare(cache, spec).map_err(ApiError::bad_request)?;
             if index.contains(&p.key) {
@@ -369,7 +366,7 @@ pub async fn publish(
 
     let published = rendered_keys.len();
     {
-        let mut index = st.index.write();
+        let mut index = st.index.wr();
         for key in rendered_keys {
             index.insert(key);
         }

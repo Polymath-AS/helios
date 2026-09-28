@@ -6,6 +6,7 @@ use std::time::{Duration, SystemTime};
 use helios_core::Compression;
 use rusqlite::params;
 
+use crate::state::Locked;
 use crate::state::Shared;
 
 /// Blobs uploaded but not yet published are kept this long, so a push that
@@ -30,9 +31,9 @@ pub async fn run_forever(st: Shared) {
         interval.tick().await;
         let st2 = st.clone();
         match tokio::task::spawn_blocking(move || collect(&st2)).await {
-            Ok(Ok(stats)) => tracing::info!(?stats, "gc finished"),
-            Ok(Err(e)) => tracing::error!(error = %e, "gc failed"),
-            Err(e) => tracing::error!(error = %e, "gc panicked"),
+            Ok(Ok(stats)) => crate::log::info!("gc finished: {stats:?}"),
+            Ok(Err(e)) => crate::log::error!("gc failed: {e}"),
+            Err(e) => crate::log::error!("gc panicked: {e}"),
         }
     }
 }
@@ -82,7 +83,7 @@ pub fn collect(st: &Shared) -> anyhow::Result<GcStats> {
                 match std::fs::remove_file(st.nar_path(&hash, compression)) {
                     Ok(()) => stats.bytes += size,
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(e) => tracing::warn!(error = %e, "removing blob file"),
+                    Err(e) => crate::log::warning!("removing blob file: {e}"),
                 }
             }
             Ok(victims.len())
@@ -94,7 +95,7 @@ pub fn collect(st: &Shared) -> anyhow::Result<GcStats> {
     }
 
     stats.tokens = st.db.write(|conn| conn.execute("DELETE FROM tokens WHERE expires_at < ?1", [now]))?;
-    st.tokens.write().retain(|_, t| t.expires_at >= now);
+    st.tokens.wr().retain(|_, t| t.expires_at >= now);
 
     let audit_cutoff = now - st.cfg.audit_retention.as_secs() as i64;
     stats.audit_rows = st.db.write(|conn| conn.execute("DELETE FROM audit_log WHERE ts < ?1", [audit_cutoff]))?;

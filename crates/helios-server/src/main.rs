@@ -5,6 +5,7 @@ mod config;
 mod db;
 mod error;
 mod gc;
+mod log;
 mod push;
 mod read;
 mod state;
@@ -21,9 +22,6 @@ use serde_json::json;
 
 use crate::config::{Args, Config};
 use crate::state::{AppState, Shared};
-
-#[global_allocator]
-static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 fn load_signer(args: &Args) -> anyhow::Result<Option<helios_core::Signer>> {
     let Some(path) = &args.signing_key_file else { return Ok(None) };
@@ -67,7 +65,7 @@ pub async fn build_state(args: &Args) -> anyhow::Result<Shared> {
     let db = db::Db::open(&cfg.data_dir.join("helios.db"))?;
     let signer = load_signer(args)?;
     if signer.is_none() {
-        tracing::warn!("no signing key configured; narinfo will be unsigned");
+        crate::log::warning!("no signing key configured; narinfo will be unsigned");
     }
     let (audit_tx, audit_rx) = tokio::sync::mpsc::unbounded_channel();
     tokio::spawn(audit::run(db.clone(), audit_rx));
@@ -77,9 +75,7 @@ pub async fn build_state(args: &Args) -> anyhow::Result<Shared> {
 }
 
 fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "helios_server=info".into()))
-        .init();
+    log::init();
     let args = Args::parse();
 
     if args.print_public_key {
@@ -91,12 +87,20 @@ fn main() -> anyhow::Result<()> {
     tokio::runtime::Builder::new_multi_thread().enable_all().build()?.block_on(async move {
         let st = build_state(&args).await?;
         let listener = tokio::net::TcpListener::bind(args.listen).await?;
-        tracing::info!(listen = %args.listen, "helios listening");
+        crate::log::info!("listening on {}", args.listen);
         axum::serve(listener, router(st).into_make_service_with_connect_info::<SocketAddr>())
-            .with_graceful_shutdown(async {
-                let _ = tokio::signal::ctrl_c().await;
-            })
+            .with_graceful_shutdown(shutdown_signal())
             .await?;
         Ok(())
     })
+}
+
+/// SIGTERM (systemd stop) or SIGINT: finish in-flight requests, then exit.
+async fn shutdown_signal() {
+    use tokio::signal::unix::{SignalKind, signal};
+    let mut term = signal(SignalKind::terminate()).expect("installing SIGTERM handler");
+    let term = std::pin::pin!(term.recv());
+    let int = std::pin::pin!(tokio::signal::ctrl_c());
+    futures_util::future::select(term, int).await;
+    crate::log::info!("shutting down");
 }

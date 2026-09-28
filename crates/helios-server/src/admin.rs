@@ -7,6 +7,7 @@ use rusqlite::params;
 use serde::Deserialize;
 use serde_json::json;
 
+use crate::state::Locked;
 use crate::audit::Audit;
 use crate::auth::{self, AUDIENCE, Claims, ISSUER, MAX_CACHES_PER_TOKEN, MAX_PERMS_PER_TOKEN, Perm};
 use crate::error::{ApiError, ApiResult};
@@ -59,7 +60,7 @@ pub async fn create_cache(
 
 pub async fn list_caches(State(st): State<Shared>, headers: HeaderMap) -> ApiResult<Json<serde_json::Value>> {
     st.authorize_admin(&headers)?;
-    let mut caches: Vec<_> = st.caches.read().iter().map(|(name, c)| json!({ "name": name, "public": c.public })).collect();
+    let mut caches: Vec<_> = st.caches.rd().iter().map(|(name, c)| json!({ "name": name, "public": c.public })).collect();
     caches.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
     Ok(Json(json!({ "caches": caches })))
 }
@@ -103,7 +104,7 @@ pub async fn create_token(
 
     let now = crate::db::now();
     let claims = Claims {
-        jti: uuid::Uuid::new_v4().to_string(),
+        jti: helios_core::uuid_v4(),
         sub: req.subject,
         iss: ISSUER.into(),
         aud: AUDIENCE.into(),
@@ -131,7 +132,7 @@ pub async fn create_token(
         })
     })
     .await??;
-    st.tokens.write().insert(claims.jti.as_str().into(), TokenState { expires_at: claims.exp, revoked: false });
+    st.tokens.wr().insert(claims.jti.as_str().into(), TokenState { expires_at: claims.exp, revoked: false });
     audit.log(&st, &who, "token.create", None, StatusCode::CREATED, json!({ "jti": claims.jti, "subject": claims.sub }));
     Ok((
         StatusCode::CREATED,
@@ -207,7 +208,7 @@ pub async fn revoke_token(
     if changed == 0 {
         return Err(ApiError::new(StatusCode::NOT_FOUND, "token not found or already revoked"));
     }
-    if let Some(t) = st.tokens.write().get_mut(jti.as_str()) {
+    if let Some(t) = st.tokens.wr().get_mut(jti.as_str()) {
         t.revoked = true;
     }
     audit.log(&st, &who, "token.revoke", None, StatusCode::OK, json!({ "jti": jti }));
