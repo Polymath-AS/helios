@@ -53,5 +53,8 @@ pkgs.testers.runNixOSTest {
         machine.wait_until_succeeds("curl -sf http://127.0.0.1:8080/healthz")
         machine.succeed("curl -sf http://127.0.0.1:8080/main/$(basename ${pkgs.hello} | cut -c1-32).narinfo")
         assert machine.succeed("docker exec helios helios-public-key").strip() == pubkey
+        # The daemon waited for the new server, not the last run's socket.
+        machine.wait_until_succeeds("docker logs helios 2>&1 | grep -c 'helios-daemon started' | grep -qx 2")
+        machine.fail("docker logs helios 2>&1 | grep -q 'Connection refused'")
   '';
 }

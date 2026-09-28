@@ -14,7 +14,7 @@ let
 
   entrypoint = pkgs.writeShellApplication {
     name = "helios-entrypoint";
-    runtimeInputs = [ helios ];
+    runtimeInputs = [ helios pkgs.coreutils ];
     text = ''
       data="''${HELIOS_DATA_DIR:-/var/lib/helios}"
       secrets="$data/secrets"
@@ -34,13 +34,16 @@ let
       fi
 
       export HELIOS_ADMIN_SOCKET="''${HELIOS_ADMIN_SOCKET:-/run/helios/admin.sock}"
+      # A restarted container keeps the last run's socket; without this the
+      # wait below would pass before the server is listening.
+      rm -f "$HELIOS_ADMIN_SOCKET"
       helios-server &
       server=$!
       daemon=
       if [[ "''${HELIOS_DAEMON:-1}" != 0 ]]; then
         for _ in {1..100}; do
           [[ -S "$HELIOS_ADMIN_SOCKET" ]] && break
-          read -rt 0.1 <> <(:) || true
+          sleep 0.1
         done
         helios-daemon --socket "$HELIOS_ADMIN_SOCKET" --data-dir "$data" &
         daemon=$!
