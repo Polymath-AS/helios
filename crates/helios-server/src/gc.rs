@@ -78,7 +78,7 @@ pub fn collect_blobs(st: &Shared) -> anyhow::Result<(usize, u64)> {
             let tx = conn.transaction()?;
             let victims: Vec<(i64, Vec<u8>, String, u64)> = {
                 let mut stmt = tx.prepare_cached(
-                    "SELECT id, file_hash, compression, file_size FROM blobs b WHERE created_at < ?1
+                    "SELECT id, file_hash, compression, file_size FROM blobs b WHERE created_at <= ?1
                      AND NOT EXISTS (SELECT 1 FROM paths p WHERE p.blob_id = b.id) LIMIT ?2",
                 )?;
                 stmt.query_map(params![cutoff, BLOB_BATCH], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?

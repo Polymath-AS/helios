@@ -48,7 +48,7 @@ fn param<T: std::str::FromStr>(uri: &Uri, name: &str) -> Option<T> {
 
 async fn stats(State(st): State<Shared>) -> ApiResult<Json<Value>> {
     let db_st = st.clone();
-    let (caches, blob_count, blob_bytes) = blocking(move || {
+    let (caches, blob_count, blob_bytes, unreferenced) = blocking(move || {
         db_st.db.read(|conn| {
             let mut stmt = conn.prepare_cached(
                 "SELECT c.name, c.is_public, count(p.id) FROM caches c LEFT JOIN paths p ON p.cache_id = c.id GROUP BY c.id ORDER BY c.name",
@@ -57,7 +57,13 @@ async fn stats(State(st): State<Shared>) -> ApiResult<Json<Value>> {
                 .query_map([], |r| Ok(json!({ "name": r.get::<_, String>(0)?, "public": r.get::<_, bool>(1)?, "paths": r.get::<_, u64>(2)? })))?
                 .collect::<rusqlite::Result<_>>()?;
             let (count, bytes): (u64, u64) = conn.query_row("SELECT count(*), coalesce(sum(file_size), 0) FROM blobs", [], |r| Ok((r.get(0)?, r.get(1)?)))?;
-            Ok((caches, count, bytes))
+            // Blobs no path uses: GC deletes them once their upload grace ends.
+            let unreferenced: u64 = conn.query_row(
+                "SELECT coalesce(sum(file_size), 0) FROM blobs b WHERE NOT EXISTS (SELECT 1 FROM paths p WHERE p.blob_id = b.id)",
+                [],
+                |r| r.get(0),
+            )?;
+            Ok((caches, count, bytes, unreferenced))
         })
         .map_err(internal)
     })
@@ -65,7 +71,7 @@ async fn stats(State(st): State<Shared>) -> ApiResult<Json<Value>> {
     let c = &st.counters;
     Ok(Json(json!({
         "caches": caches,
-        "blobs": { "count": blob_count, "bytes": blob_bytes },
+        "blobs": { "count": blob_count, "bytes": blob_bytes, "unreferencedBytes": unreferenced },
         "indexedPaths": st.index.rd().len(),
         "narinfoCacheEntries": st.narinfo.len(),
         "requests": {
