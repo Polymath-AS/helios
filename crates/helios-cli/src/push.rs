@@ -19,6 +19,7 @@ use crate::nix::{self, PathInfo};
 const QUERY_BATCH: usize = 50_000;
 const PUBLISH_BATCH: usize = 1_000;
 
+#[derive(Clone, Copy)]
 pub struct Options {
     pub jobs: usize,
     pub level: i32,

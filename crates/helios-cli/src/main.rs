@@ -3,7 +3,9 @@ mod config;
 mod transport;
 mod nix;
 mod push;
+mod watch;
 
+use anyhow::Context;
 use clap::{Parser, Subcommand};
 use serde_json::{Value, json};
 
@@ -14,6 +16,14 @@ struct Cli {
     /// Server name from `helios login` (default: the last one logged in).
     #[arg(long, global = true, env = "HELIOS_SERVER")]
     server: Option<String>,
+
+    /// Server URL, instead of a saved login (for services and CI).
+    #[arg(long, global = true, env = "HELIOS_URL")]
+    url: Option<String>,
+
+    /// File holding the token for --url (or set HELIOS_TOKEN).
+    #[arg(long, global = true, env = "HELIOS_TOKEN_FILE")]
+    token_file: Option<std::path::PathBuf>,
 
     #[command(subcommand)]
     command: Command,
@@ -37,6 +47,26 @@ enum Command {
         /// zstd compression level (1-19).
         #[arg(long, default_value_t = 3, value_parser = clap::value_parser!(i32).range(1..=19))]
         level: i32,
+    },
+    /// Push paths as they are built: drain a spool filled by `queue-paths`.
+    WatchStore {
+        cache: String,
+        /// Spool directory shared with the post-build hook.
+        #[arg(long, default_value = "/var/lib/helios-watch-store/spool")]
+        spool: std::path::PathBuf,
+        /// Parallel uploads.
+        #[arg(long, short = 'j', default_value_t = 8)]
+        jobs: usize,
+        /// zstd compression level (1-19).
+        #[arg(long, default_value_t = 3, value_parser = clap::value_parser!(i32).range(1..=19))]
+        level: i32,
+    },
+    /// Spool store paths for `watch-store` (Nix post-build-hook; reads $OUT_PATHS).
+    QueuePaths {
+        #[arg(long, default_value = "/var/lib/helios-watch-store/spool")]
+        spool: std::path::PathBuf,
+        /// Paths to queue; defaults to $OUT_PATHS.
+        paths: Vec<String>,
     },
     /// Manage caches (admin).
     #[command(subcommand)]
@@ -89,11 +119,31 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         println!("logged in to '{name}' at {url}");
         return Ok(());
     }
-    let client = api::Client::new(&config::server(cli.server.as_deref())?)?;
+    // Runs inside the nix-daemon's post-build hook: no server needed, and it
+    // must return quickly.
+    if let Command::QueuePaths { spool, paths } = &cli.command {
+        let joined = if paths.is_empty() { std::env::var("OUT_PATHS").unwrap_or_default() } else { paths.join(" ") };
+        watch::queue(spool, &joined)?;
+        return Ok(());
+    }
+    let server = match &cli.url {
+        Some(url) => {
+            let token = match &cli.token_file {
+                Some(file) => std::fs::read_to_string(file).with_context(|| format!("reading {}", file.display()))?,
+                None => std::env::var("HELIOS_TOKEN").context("--url needs --token-file or HELIOS_TOKEN")?,
+            };
+            config::Server { server: url.clone(), token: token.trim().to_owned() }
+        }
+        None => config::server(cli.server.as_deref())?,
+    };
+    let client = api::Client::new(&server)?;
     match cli.command {
-        Command::Login { .. } => unreachable!(),
+        Command::Login { .. } | Command::QueuePaths { .. } => unreachable!(),
         Command::Push { cache, installables, closure, jobs, level } => {
             push::push(&client, &cache, &installables, push::Options { jobs, level, closure }).await?;
+        }
+        Command::WatchStore { cache, spool, jobs, level } => {
+            watch::watch(&client, &cache, &spool, push::Options { jobs, level, closure: true }).await?;
         }
         Command::Cache(CacheCmd::Create { name, private }) => {
             print(&client.admin_post("/admin/caches", json!({ "name": name, "public": !private })).await?);
