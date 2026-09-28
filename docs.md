@@ -208,17 +208,24 @@ private cache without being able to read it. A refused request says why,
 such as `token does not grant push on cache 'main'` or `token has been
 revoked`.
 
-For private caches, give Nix the token through netrc. Nix sends it as HTTP
-Basic auth, and the server reads the password:
+## Substituting
 
-```
-machine cache.example.com
-password <token>
+`helios use` configures Nix to pull from a cache, using the URL given to
+`helios login` (not an address the server reports, which behind a proxy is
+the wrong one):
+
+```bash
+helios login reader https://cache.example.com "$READ_TOKEN"
+helios use team            # adds to ~/.config/nix/nix.conf and netrc
+helios use team --print    # system-wide settings, for NixOS or /etc/nix
 ```
 
-```nix
-nix.settings.netrc-file = "/etc/nix/netrc";
-```
+It adds the substituter and the cache's signing key and, for a private
+cache, a netrc entry with the login's token (Nix sends it as HTTP Basic
+auth; the server reads the password). Running it again changes nothing, and
+logging in with a new token replaces the old entry. The Nix daemon ignores
+substituters from users it does not trust; `helios use` warns when that is
+the case, and `--print` gives the `nix.settings` to use instead.
 
 ## Pushing
 
@@ -249,6 +256,9 @@ Substituter endpoints (`GET`/`HEAD`):
 | `/<cache>/nix-cache-info` | |
 | `/<cache>/<hash>.narinfo` | misses are answered from memory |
 | `/<cache>/nar/<file-hash>.nar.zst` | only served by caches that publish it |
+
+`GET /_api/v2/caches/<cache>` returns `{"name", "public", "publicKey"}` to
+anyone who can read the cache.
 
 Push endpoints (bearer token with `push` on the cache):
 

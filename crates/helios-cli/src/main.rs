@@ -2,6 +2,7 @@ mod api;
 mod config;
 mod nix;
 mod push;
+mod substituter;
 mod transport;
 mod watch;
 
@@ -70,6 +71,15 @@ enum Command {
         /// request; so does a NAR that fits in one chunk.
         #[arg(long, default_value_t = 32, value_parser = clap::value_parser!(u64).range(0..=64))]
         chunk_size: u64,
+    },
+    /// Configure Nix to substitute from a cache: its URL, signing key and,
+    /// for a private cache, this login's token in netrc.
+    Use {
+        cache: String,
+        /// Print system-wide settings (nix.conf, NixOS, netrc) instead of
+        /// writing the user's nix.conf.
+        #[arg(long)]
+        print: bool,
     },
     /// Spool store paths for `watch-store` (Nix post-build-hook; reads $OUT_PATHS).
     QueuePaths {
@@ -156,6 +166,10 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
         Command::Login { .. } | Command::QueuePaths { .. } => unreachable!(),
         Command::Push { cache, installables, closure, jobs, level, chunk_size } => {
             push::push(&client, &cache, &installables, push::Options { jobs, level, closure, chunk_size: (chunk_size << 20) as usize }).await?;
+        }
+        Command::Use { cache, print } => {
+            let plan = substituter::plan(&client, &server, &cache).await?;
+            if print { plan.print() } else { plan.apply()? }
         }
         Command::WatchStore { cache, spool, jobs, level, chunk_size } => {
             watch::watch(&client, &cache, &spool, push::Options { jobs, level, closure: true, chunk_size: (chunk_size << 20) as usize }).await?;

@@ -84,6 +84,10 @@ impl Client {
         self.call(Method::PUT, &format!("/caches/{cache}/nar?compression=zstd"), Some("application/x-nix-nar"), body).await
     }
 
+    pub async fn cache_info(&self, cache: &str) -> anyhow::Result<crate::substituter::CacheInfo> {
+        self.call(Method::GET, &format!("/caches/{cache}"), None, transport::full(Bytes::new())).await
+    }
+
     /// Starts a chunked upload; returns its id.
     pub async fn upload_create(&self, cache: &str) -> anyhow::Result<String> {
         #[derive(Deserialize)]

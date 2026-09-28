@@ -129,6 +129,21 @@ check "pull-only token cannot push" 403 "$(status -X POST -H "authorization: Bea
 check "push-only token cannot read" 403 "$(status -u "builder:$PUSH_ONLY" "$URL/secret/$HASH.narinfo")"
 check "refusals say why" "token does not grant push on cache 'secret'" "$(curl -s -X POST -H "authorization: Bearer $PULL_ONLY" -H 'content-type: application/json' -d '{"hashes":[]}' "$URL/_api/v2/caches/secret/missing" | jq -r .error)"
 
+echo "=== helios use"
+helios login reader "$URL" "$PULL_ONLY" >/dev/null 2>&1
+helios use secret 2>/dev/null
+helios use secret 2>/dev/null
+NIXCONF="$XDG_CONFIG_HOME/nix/nix.conf"
+check "nix.conf gets the login URL, once" 1 "$(grep -cx "extra-substituters = $URL/secret" "$NIXCONF")"
+check "nix.conf gets the signing key" 1 "$(grep -cx "extra-trusted-public-keys = $PUBKEY" "$NIXCONF")"
+check "netrc is private" 600 "$(stat -c %a "$XDG_CONFIG_HOME/nix/netrc")"
+check "netrc holds the token once" 1 "$(grep -c "password $PULL_ONLY" "$XDG_CONFIG_HOME/nix/netrc")"
+# Signatures checked against the configured key, fetched with netrc auth.
+nix store verify --no-contents --store "$URL/secret" "$TARGET" && check "nix reads the private cache with this config" 0 0
+check "and not without it" fails "$(XDG_CONFIG_HOME="$WORK/empty" nix store verify --no-contents --store "$URL/secret" "$TARGET" >/dev/null 2>&1 || echo fails)"
+check "--print shows system-wide settings" 1 "$(helios use secret --print | grep -c "^machine 127.0.0.1 *\$")"
+helios login ci "$URL" "$PUSH_TOKEN" >/dev/null 2>&1
+
 echo "=== abuse"
 check "garbage upload rejected" 400 "$(status -X PUT -H "authorization: Bearer $PUSH_TOKEN" --data-binary 'not a zstd stream' "$URL/_api/v2/caches/main/nar")"
 check "raw non-NAR upload rejected" 400 "$(status -X PUT -H "authorization: Bearer $PUSH_TOKEN" --data-binary 'hello' "$URL/_api/v2/caches/main/nar?compression=none")"

@@ -171,3 +171,16 @@ async fn nar_response(
     });
     builder.body(Body::from_stream(stream)).map_err(ApiError::internal)
 }
+
+/// `GET /_api/v2/caches/{cache}`: what a client needs to substitute from the
+/// cache. Readable by whoever can read the cache itself.
+pub async fn cache_info(
+    State(st): State<Shared>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    headers: HeaderMap,
+) -> ApiResult<axum::Json<serde_json::Value>> {
+    let cache = st.cache(&name).ok_or_else(ApiError::not_found)?;
+    st.authorize_read(&headers, &name, cache)?;
+    let public_key = st.signer.as_ref().map(helios_core::Signer::public_key);
+    Ok(axum::Json(serde_json::json!({ "name": name, "public": cache.public, "publicKey": public_key })))
+}

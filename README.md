@@ -57,11 +57,9 @@ helios login ci https://cache.example.com "$TOKEN"
 helios push main --closure /run/current-system
 ```
 
-```nix
-nix.settings = {
-  substituters = [ "https://cache.example.com/main" ];
-  trusted-public-keys = [ "cache.example.com-1:..." ];  # from --print-public-key
-};
+```bash
+helios use main            # this user's Nix pulls from the cache
+helios use main --print    # settings for NixOS or /etc/nix/nix.conf
 ```
 
 On NixOS, use the flake's `nixosModules.default` (`services.helios`): the

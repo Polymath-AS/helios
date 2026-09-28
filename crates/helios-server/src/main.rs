@@ -35,6 +35,7 @@ fn load_signer(args: &Args) -> anyhow::Result<Option<helios_core::Signer>> {
 
 pub fn router(st: Shared) -> Router {
     let api = Router::new()
+        .route("/caches/{cache}", get(read::cache_info))
         .route("/caches/{cache}/missing", post(push::missing))
         .route("/caches/{cache}/nars/known", post(push::known))
         .route("/caches/{cache}/nar", put(push::upload).layer(DefaultBodyLimit::disable()))
