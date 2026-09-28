@@ -34,6 +34,12 @@ struct Args {
     #[arg(long, env = "HELIOS_DATA_DIR", default_value = "/var/lib/helios")]
     data_dir: PathBuf,
 
+    /// Directory for the daemon's own state, such as where an unfinished
+    /// scrub resumes (default: systemd's $STATE_DIRECTORY; without either,
+    /// a restart begins the scrub again).
+    #[arg(long, env = "HELIOS_DAEMON_STATE_DIR")]
+    state_dir: Option<PathBuf>,
+
     /// Keep stored NARs under this size (e.g. 500G); 0 disables the quota.
     #[arg(long, env = "HELIOS_QUOTA", default_value = "0", value_parser = parse_size)]
     quota: u64,
@@ -172,9 +178,25 @@ fn run() -> anyhow::Result<()> {
         "watermarks must satisfy 0 <= low < high <= 1"
     );
     let policy = autogc::Policy { quota: args.quota, high: args.quota_high, low: args.quota_low, min_free: args.min_free };
-    let d = Arc::new(Daemon { client: client::Client::new(args.socket.clone()), data_dir: args.data_dir.clone(), metrics: Default::default() });
+    // systemd's StateDirectory= may name several directories; the first is ours.
+    let state_dir = args.state_dir.clone().or_else(|| {
+        let dirs = std::env::var_os("STATE_DIRECTORY")?;
+        std::env::split_paths(&dirs).next().filter(|p| !p.as_os_str().is_empty())
+    });
+    if let Some(dir) = &state_dir {
+        std::fs::create_dir_all(dir).map_err(|e| anyhow::anyhow!("creating {}: {e}", dir.display()))?;
+    }
+    let d = Arc::new(Daemon {
+        client: client::Client::new(args.socket.clone()),
+        data_dir: args.data_dir.clone(),
+        state_dir,
+        metrics: Default::default(),
+        stopping: Default::default(),
+    });
 
-    tokio::runtime::Builder::new_current_thread().enable_all().build()?.block_on(async move {
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
+    let stopping = d.stopping.clone();
+    let result = runtime.block_on(async move {
         let mut tasks = Vec::new();
         if policy.quota > 0 || policy.min_free > 0 {
             let d = d.clone();
@@ -185,9 +207,11 @@ fn run() -> anyhow::Result<()> {
         if !args.scrub_interval.is_zero() {
             let d = d.clone();
             let rate = args.scrub_rate;
-            // Wait a full interval first so restarts do not re-read everything.
+            // Wait a full interval first so restarts do not re-read
+            // everything, unless a pass was cut short.
+            let delay = !scrub::resuming(&d);
             tasks.push(tokio::spawn(
-                async move { periodic("scrub", args.scrub_interval, true, &d.metrics.errors_scrub, || scrub::run(&d, rate)).await },
+                async move { periodic("scrub", args.scrub_interval, delay, &d.metrics.errors_scrub, || scrub::run(&d, rate)).await },
             ));
         }
         {
@@ -222,7 +246,12 @@ fn run() -> anyhow::Result<()> {
         shutdown().await;
         tracing::info!("shutting down");
         Ok(())
-    })
+    });
+    // Blocking work (a scrub read) sees this and stops; do not wait long
+    // for anything that does not.
+    stopping.store(true, std::sync::atomic::Ordering::Relaxed);
+    runtime.shutdown_timeout(Duration::from_secs(5));
+    result
 }
 
 #[cfg(test)]

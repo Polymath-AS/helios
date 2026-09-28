@@ -70,7 +70,12 @@ pub async fn render(d: &Daemon) -> String {
         "helios_scrub_blobs_total",
         "counter",
         "Blobs checked by the integrity scrub.",
-        &[("{result=\"ok\"}", get(&m.scrub_ok)), ("{result=\"corrupt\"}", get(&m.scrub_corrupt)), ("{result=\"missing\"}", get(&m.scrub_missing))],
+        &[
+            ("{result=\"ok\"}", get(&m.scrub_ok)),
+            ("{result=\"corrupt\"}", get(&m.scrub_corrupt)),
+            ("{result=\"missing\"}", get(&m.scrub_missing)),
+            ("{result=\"unreadable\"}", get(&m.scrub_unreadable)),
+        ],
     );
     line(&mut out, "helios_scrub_bytes_total", "counter", "Bytes read by the integrity scrub.", &[("", get(&m.scrub_bytes))]);
     line(&mut out, "helios_scrub_last_complete_timestamp_seconds", "gauge", "End of the last full scrub pass.", &[("", get(&m.scrub_last_complete))]);
@@ -91,7 +96,16 @@ pub async fn serve(d: Arc<Daemon>, addr: SocketAddr) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!(url = %format_args!("http://{addr}/metrics"), "metrics listening");
     loop {
-        let (stream, _) = listener.accept().await?;
+        // Accepting fails transiently (EMFILE, a connection reset before
+        // it was accepted); the endpoint must outlive that.
+        let stream = match listener.accept().await {
+            Ok((stream, _)) => stream,
+            Err(e) => {
+                tracing::warn!(error = %e, "accepting a metrics connection failed");
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                continue;
+            }
+        };
         let d = d.clone();
         tokio::spawn(async move {
             let svc = service_fn(move |req: http::Request<hyper::body::Incoming>| {

@@ -1,5 +1,6 @@
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use crate::client::Client;
 
@@ -13,6 +14,7 @@ pub struct Metrics {
     pub scrub_ok: AtomicU64,
     pub scrub_corrupt: AtomicU64,
     pub scrub_missing: AtomicU64,
+    pub scrub_unreadable: AtomicU64,
     pub scrub_bytes: AtomicU64,
     pub scrub_last_complete: AtomicU64,
     pub db_checkpoints: AtomicU64,
@@ -38,7 +40,11 @@ pub fn now() -> u64 {
 pub struct Daemon {
     pub client: Client,
     pub data_dir: PathBuf,
+    /// Where the daemon keeps its own state, such as the scrub position.
+    pub state_dir: Option<PathBuf>,
     pub metrics: Metrics,
+    /// Set on shutdown, for long blocking work to stop early.
+    pub stopping: Arc<AtomicBool>,
 }
 
 /// Free and total bytes of the filesystem holding `path`.

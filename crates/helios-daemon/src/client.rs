@@ -2,6 +2,7 @@
 //! are rare (minutes apart), so each one gets a fresh connection.
 
 use std::path::PathBuf;
+use std::time::Duration;
 
 use anyhow::{Context, bail};
 use bytes::Bytes;
@@ -12,6 +13,12 @@ use serde_json::Value;
 use tokio::net::UnixStream;
 
 use crate::io::Io;
+
+/// Queries: a server that takes longer is stuck.
+const GET_TIMEOUT: Duration = Duration::from_secs(60);
+/// Operations, which may be slow (a backup of a large database, a large
+/// eviction) but must not hang a task forever.
+const POST_TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 #[derive(Clone)]
 pub struct Client {
@@ -24,6 +31,14 @@ impl Client {
     }
 
     async fn call<T: DeserializeOwned>(&self, method: Method, path: &str, body: Option<Value>) -> anyhow::Result<T> {
+        let limit = if method == Method::GET { GET_TIMEOUT } else { POST_TIMEOUT };
+        match tokio::time::timeout(limit, self.request(method, path, body)).await {
+            Ok(result) => result,
+            Err(_) => bail!("{path}: no response in {limit:?}"),
+        }
+    }
+
+    async fn request<T: DeserializeOwned>(&self, method: Method, path: &str, body: Option<Value>) -> anyhow::Result<T> {
         let stream = UnixStream::connect(&self.socket).await.with_context(|| format!("connecting to {}", self.socket.display()))?;
         let (mut sender, conn) = hyper::client::conn::http1::handshake(Io(stream)).await?;
         tokio::spawn(conn);
