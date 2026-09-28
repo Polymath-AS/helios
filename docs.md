@@ -233,6 +233,13 @@ streams it straight into the upload, without temp files. It checks every
 NAR hash against the Nix database. NARs the server already holds under any
 cache are reused, and paths are published dependencies-first, in batches.
 
+A NAR larger than `--chunk-size` (MiB, default 32) is uploaded in chunks of
+that size, so pushes work through proxies that cap request bodies, such as
+Cloudflare (100 MB on the free plan) and Cloud Run (32 MiB). Each chunk is
+retried on its own after a network or server error, and the server's offset
+decides whether it has to be sent again. `--chunk-size 0` streams every NAR
+in one request.
+
 ## HTTP API
 
 Substituter endpoints (`GET`/`HEAD`):
@@ -250,7 +257,17 @@ Push endpoints (bearer token with `push` on the cache):
 | `POST /_api/v2/caches/<cache>/missing` | `{"hashes": [...]}` | store path hashes absent from the cache |
 | `POST /_api/v2/caches/<cache>/nars/known` | `{"narHashes": [...]}` | NAR hashes the server already has |
 | `PUT /_api/v2/caches/<cache>/nar?compression=zstd` | compressed NAR | returns the verified hashes and sizes |
+| `POST /_api/v2/caches/<cache>/uploads?compression=zstd` | | starts a chunked upload: `{"id", "offset": 0}` |
+| `PATCH /_api/v2/caches/<cache>/uploads/<id>?offset=<n>` | the next chunk, up to 64 MiB | appends it whole or not at all: `{"offset"}`; a stale offset gets `409` with the current one |
+| `GET /_api/v2/caches/<cache>/uploads/<id>` | | `{"offset"}`, to resume after a failed request |
+| `POST /_api/v2/caches/<cache>/uploads/<id>/complete` | | as `PUT /nar` |
+| `DELETE /_api/v2/caches/<cache>/uploads/<id>` | | abandons it |
 | `POST /_api/v2/caches/<cache>/paths` | `{"paths": [...]}` | publishes a batch in one transaction; `409 nar_required` lists paths without an uploaded NAR |
+
+Chunks are verified as they arrive, as in a single `PUT`. An upload belongs
+to the token that started it, is dropped after an hour without a chunk or
+after an invalid one, and does not survive a server restart (the client
+then starts that NAR again).
 
 Admin endpoints (bearer admin secret): `GET/POST /_api/v2/admin/caches`,
 `GET/POST /_api/v2/admin/tokens`, `POST /_api/v2/admin/tokens/<jti>/revoke`.

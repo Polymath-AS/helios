@@ -84,6 +84,69 @@ impl Client {
         self.call(Method::PUT, &format!("/caches/{cache}/nar?compression=zstd"), Some("application/x-nix-nar"), body).await
     }
 
+    /// Starts a chunked upload; returns its id.
+    pub async fn upload_create(&self, cache: &str) -> anyhow::Result<String> {
+        #[derive(Deserialize)]
+        struct R {
+            id: String,
+        }
+        let r: R = self.call(Method::POST, &format!("/caches/{cache}/uploads?compression=zstd"), None, transport::full(Bytes::new())).await?;
+        Ok(r.id)
+    }
+
+    /// Appends `chunk` at `offset`, retrying transient failures. After a
+    /// failed request the chunk may or may not have landed; the server's
+    /// offset says which, and a chunk is never appended twice.
+    pub async fn upload_append(&self, cache: &str, id: &str, offset: u64, chunk: Bytes) -> anyhow::Result<u64> {
+        #[derive(Deserialize)]
+        struct R {
+            offset: u64,
+        }
+        let end = offset + chunk.len() as u64;
+        let path = format!("/_api/v2/caches/{cache}/uploads/{id}");
+        let mut delay = std::time::Duration::from_millis(250);
+        for attempt in 1.. {
+            let failure =
+                match self.http.send(Method::PATCH, &format!("{path}?offset={offset}"), &self.token, None, transport::full(chunk.clone())).await {
+                    Ok((status, bytes)) if status.is_success() => return Ok(serde_json::from_slice::<R>(&bytes)?.offset),
+                    Ok((status, bytes)) if status == StatusCode::CONFLICT => {
+                        let at = serde_json::from_slice::<Value>(&bytes).ok().and_then(|v| v["offset"].as_u64());
+                        match at {
+                            Some(at) if at == end => return Ok(end),
+                            _ => bail!("{}", error_text(status, &bytes)),
+                        }
+                    }
+                    Ok((status, bytes)) if status.is_server_error() || status == StatusCode::TOO_MANY_REQUESTS => error_text(status, &bytes),
+                    Ok((status, bytes)) => bail!("{}", error_text(status, &bytes)),
+                    Err(e) => format!("{e:#}"),
+                };
+            if attempt == 5 {
+                bail!("uploading a chunk at offset {offset}: {failure}");
+            }
+            tracing::warn!("uploading a chunk at offset {offset} failed, retrying in {delay:?}: {failure}");
+            tokio::time::sleep(delay).await;
+            delay *= 2;
+            // The request may have landed before the failure; if so, move on.
+            if let Ok(r) = self.call::<R>(Method::GET, &format!("/caches/{cache}/uploads/{id}"), None, transport::full(Bytes::new())).await {
+                match r.offset {
+                    at if at == end => return Ok(end),
+                    at if at == offset => {}
+                    at => bail!("server is at offset {at}, expected {offset} or {end}"),
+                }
+            }
+        }
+        unreachable!()
+    }
+
+    pub async fn upload_complete(&self, cache: &str, id: &str) -> anyhow::Result<Uploaded> {
+        self.call(Method::POST, &format!("/caches/{cache}/uploads/{id}/complete"), None, transport::full(Bytes::new())).await
+    }
+
+    pub async fn upload_abort(&self, cache: &str, id: &str) {
+        let _ =
+            self.http.send(Method::DELETE, &format!("/_api/v2/caches/{cache}/uploads/{id}"), &self.token, None, transport::full(Bytes::new())).await;
+    }
+
     pub async fn publish(&self, cache: &str, paths: &[PathSpec]) -> anyhow::Result<Publish> {
         let body = transport::full(serde_json::to_vec(&json!({ "paths": paths }))?);
         let (status, bytes) =

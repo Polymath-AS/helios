@@ -47,6 +47,11 @@ enum Command {
         /// zstd compression level (1-19).
         #[arg(long, default_value_t = 3, value_parser = clap::value_parser!(i32).range(1..=19))]
         level: i32,
+        /// Upload NARs in chunks of this many MiB, for proxies that cap
+        /// request bodies (Cloudflare, Cloud Run). 0 sends each NAR in one
+        /// request; so does a NAR that fits in one chunk.
+        #[arg(long, default_value_t = 32, value_parser = clap::value_parser!(u64).range(0..=64))]
+        chunk_size: u64,
     },
     /// Push paths as they are built: drain a spool filled by `queue-paths`.
     WatchStore {
@@ -60,6 +65,11 @@ enum Command {
         /// zstd compression level (1-19).
         #[arg(long, default_value_t = 3, value_parser = clap::value_parser!(i32).range(1..=19))]
         level: i32,
+        /// Upload NARs in chunks of this many MiB, for proxies that cap
+        /// request bodies (Cloudflare, Cloud Run). 0 sends each NAR in one
+        /// request; so does a NAR that fits in one chunk.
+        #[arg(long, default_value_t = 32, value_parser = clap::value_parser!(u64).range(0..=64))]
+        chunk_size: u64,
     },
     /// Spool store paths for `watch-store` (Nix post-build-hook; reads $OUT_PATHS).
     QueuePaths {
@@ -144,11 +154,11 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
     let client = api::Client::new(&server)?;
     match cli.command {
         Command::Login { .. } | Command::QueuePaths { .. } => unreachable!(),
-        Command::Push { cache, installables, closure, jobs, level } => {
-            push::push(&client, &cache, &installables, push::Options { jobs, level, closure }).await?;
+        Command::Push { cache, installables, closure, jobs, level, chunk_size } => {
+            push::push(&client, &cache, &installables, push::Options { jobs, level, closure, chunk_size: (chunk_size << 20) as usize }).await?;
         }
-        Command::WatchStore { cache, spool, jobs, level } => {
-            watch::watch(&client, &cache, &spool, push::Options { jobs, level, closure: true }).await?;
+        Command::WatchStore { cache, spool, jobs, level, chunk_size } => {
+            watch::watch(&client, &cache, &spool, push::Options { jobs, level, closure: true, chunk_size: (chunk_size << 20) as usize }).await?;
         }
         Command::Cache(CacheCmd::Create { name, private }) => {
             print(&client.admin_post("/admin/caches", json!({ "name": name, "public": !private })).await?);

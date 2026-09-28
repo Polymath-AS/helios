@@ -33,7 +33,7 @@ const MAX_MISSING_BATCH: usize = 100_000;
 const MAX_PUBLISH_BATCH: usize = 5_000;
 const STORE_DIR: &str = "/nix/store/";
 
-fn cache_for(st: &Shared, name: &str) -> ApiResult<CacheInfo> {
+pub(crate) fn cache_for(st: &Shared, name: &str) -> ApiResult<CacheInfo> {
     st.cache(name).ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "cache not found"))
 }
 
@@ -106,8 +106,8 @@ pub async fn known(
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UploadResp {
-    file_hash: String,
-    file_size: u64,
+    pub(crate) file_hash: String,
+    pub(crate) file_size: u64,
     nar_hash: String,
     nar_size: u64,
 }
@@ -180,6 +180,13 @@ pub async fn upload(
         (None, Ok(d)) => d,
     };
 
+    let resp = store_blob(&st, tmp, digest, compression).await?;
+    audit.log(&st, &identity, "nar.upload", Some(&name), StatusCode::CREATED, json!({ "fileHash": resp.file_hash, "size": resp.file_size }));
+    Ok((StatusCode::CREATED, Json(resp)))
+}
+
+/// Moves a verified upload at `tmp` into the blob store and records it.
+pub(crate) async fn store_blob(st: &Shared, tmp: std::path::PathBuf, digest: helios_core::Digest, compression: Compression) -> ApiResult<UploadResp> {
     let dest = st.nar_path(&digest.file_hash, compression);
     let st2 = st.clone();
     tokio::task::spawn_blocking(move || -> ApiResult<()> {
@@ -218,8 +225,7 @@ pub async fn upload(
     };
     st.counters.uploads.inc();
     st.counters.upload_bytes.add(resp.file_size);
-    audit.log(&st, &identity, "nar.upload", Some(&name), StatusCode::CREATED, json!({ "fileHash": resp.file_hash, "size": resp.file_size }));
-    Ok((StatusCode::CREATED, Json(resp)))
+    Ok(resp)
 }
 
 // ── Publish ──

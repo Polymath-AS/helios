@@ -8,12 +8,12 @@ use std::time::Instant;
 
 use anyhow::{Context, bail};
 use base64::Engine;
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use futures_util::StreamExt;
 use helios_core::{DumpOptions, HL_E_UNSUPPORTED_OS};
 use tokio::sync::mpsc;
 
-use crate::api::{Client, PathSpec, Publish};
+use crate::api::{Client, PathSpec, Publish, Uploaded};
 use crate::nix::{self, PathInfo};
 
 const QUERY_BATCH: usize = 50_000;
@@ -24,6 +24,8 @@ pub struct Options {
     pub jobs: usize,
     pub level: i32,
     pub closure: bool,
+    /// Bytes per chunked-upload request; 0 streams each NAR in one request.
+    pub chunk_size: usize,
 }
 
 fn parse_sha256(s: &str) -> Option<[u8; 32]> {
@@ -78,13 +80,62 @@ fn produce(path: &str, opts: DumpOptions, tx: mpsc::Sender<Result<Bytes, std::io
     Ok(compressor.finish()?)
 }
 
-async fn upload_one(client: &Client, cache: &str, info: &PathInfo, opts: DumpOptions) -> anyhow::Result<u64> {
-    let (tx, rx) = mpsc::channel(8);
+/// Sends the compressed NAR arriving on `rx` in `chunk_size` pieces, or in
+/// one request if it fits in one chunk.
+async fn send_chunked(
+    client: &Client,
+    cache: &str,
+    rx: &mut mpsc::Receiver<Result<Bytes, std::io::Error>>,
+    chunk_size: usize,
+) -> anyhow::Result<Uploaded> {
+    let mut buf = BytesMut::new();
+    let mut session: Option<String> = None;
+    let mut offset = 0u64;
+    let result = async {
+        loop {
+            let done = match rx.recv().await {
+                Some(chunk) => {
+                    buf.extend_from_slice(&chunk?);
+                    false
+                }
+                None => true,
+            };
+            if done && session.is_none() && buf.len() <= chunk_size {
+                return client.upload(cache, crate::transport::full(buf.split().freeze())).await;
+            }
+            while buf.len() >= chunk_size || (done && !buf.is_empty()) {
+                let chunk = buf.split_to(buf.len().min(chunk_size)).freeze();
+                let id = match &session {
+                    Some(id) => id.clone(),
+                    None => session.insert(client.upload_create(cache).await?).clone(),
+                };
+                offset = client.upload_append(cache, &id, offset, chunk).await?;
+            }
+            if done {
+                let id = session.as_deref().context("chunked upload without a session")?;
+                return client.upload_complete(cache, id).await;
+            }
+        }
+    }
+    .await;
+    if let (Err(_), Some(id)) = (&result, &session) {
+        client.upload_abort(cache, id).await;
+    }
+    result
+}
+
+async fn upload_one(client: &Client, cache: &str, info: &PathInfo, opts: DumpOptions, chunk_size: usize) -> anyhow::Result<u64> {
+    let (tx, mut rx) = mpsc::channel(8);
     let path = info.path.clone();
     let producer = tokio::task::spawn_blocking(move || produce(&path, opts, tx));
-    let chunks = futures_util::stream::unfold(rx, |mut rx| async move { rx.recv().await.map(|c| (c, rx)) });
-    let body = crate::transport::stream(chunks);
-    let uploaded = client.upload(cache, body).await;
+    let uploaded = if chunk_size == 0 {
+        let chunks = futures_util::stream::unfold(rx, |mut rx| async move { rx.recv().await.map(|c| (c, rx)) });
+        client.upload(cache, crate::transport::stream(chunks)).await
+    } else {
+        let uploaded = send_chunked(client, cache, &mut rx, chunk_size).await;
+        drop(rx); // Stops the producer if the upload gave up early.
+        uploaded
+    };
     let digest = producer.await?;
     // An upload failure aborts the producer; report the upload's error.
     let uploaded = uploaded?;
@@ -109,7 +160,7 @@ async fn upload_all(client: &Client, cache: &str, paths: &[&PathInfo], opts: &Op
     let mut results = futures_util::stream::iter(paths.iter().map(|info| async move {
         let dump = DumpOptions { level: opts.level, threads, size_hint: info.nar_size };
         let started = Instant::now();
-        (info, upload_one(client, cache, info, dump).await, started.elapsed())
+        (info, upload_one(client, cache, info, dump, opts.chunk_size).await, started.elapsed())
     }))
     .buffer_unordered(opts.jobs.max(1));
     while let Some((info, result, took)) = results.next().await {

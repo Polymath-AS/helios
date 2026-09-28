@@ -75,6 +75,7 @@ pub struct AppState {
     pub audit: mpsc::UnboundedSender<AuditEvent>,
     pub counters: crate::stats::Counters,
     pub access: crate::stats::Access,
+    pub uploads: crate::chunked::Sessions,
 }
 
 pub type Shared = Arc<AppState>;
@@ -130,6 +131,7 @@ impl AppState {
             audit,
             counters: Default::default(),
             access: Default::default(),
+            uploads: Default::default(),
         })
     }
 

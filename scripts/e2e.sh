@@ -38,7 +38,8 @@ head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$WORK/jwt"
 head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$WORK/admin"
 PUBKEY="$("$BIN/helios-server" --print-public-key --signing-key-file "$WORK/key")"
 
-RUST_LOG=helios_server=warn "$BIN/helios-server" \
+# Debug logs each request, which the chunked-upload checks count.
+HELIOS_LOG=warn,helios_server=debug "$BIN/helios-server" 2>"$WORK/server.log" \
   --listen "127.0.0.1:$PORT" \
   --data-dir "$WORK/data" \
   --signing-key-file "$WORK/key" \
@@ -56,12 +57,45 @@ echo "=== admin"
 helios login admin "$URL" "$(cat "$WORK/admin")" >/dev/null
 helios cache create main >/dev/null
 helios cache create secret --private >/dev/null
-PUSH_TOKEN="$(helios token create ci --caches main,secret --perms push,pull 2>/dev/null | jq -r .token)"
+helios cache create chunked >/dev/null
+PUSH_TOKEN="$(helios token create ci --caches main,secret,chunked --perms push,pull 2>/dev/null | jq -r .token)"
 PULL_ONLY="$(helios token create reader --caches secret 2>/dev/null | jq -r .token)"
 PUSH_ONLY="$(helios token create builder --caches secret --perms push 2>/dev/null | jq -r .token)"
 check "tokens are read-only by default" '["pull"]' "$(helios token list | jq -c '.tokens[] | select(.subject=="reader") | .perms')"
 check "token issued" true "$([ -n "$PUSH_TOKEN" ] && echo true)"
 check "admin rejects push token" 403 "$(status -H "authorization: Bearer $PUSH_TOKEN" "$URL/_api/v2/admin/tokens")"
+
+echo "=== chunked upload"
+
+helios login ci "$URL" "$PUSH_TOKEN" >/dev/null
+# 1 MiB chunks: the closure's larger NARs go in pieces, the rest in one request.
+helios push chunked --closure --chunk-size 1 "$TARGET" 2>&1 | tail -1
+check "large NARs were sent in chunks" true "$([ "$(grep -c 'method=PATCH' "$WORK/server.log")" -gt 1 ] && echo true)"
+check "chunks fit the chunk size" 0 "$(grep -c 'status=413' "$WORK/server.log")"
+NIX_CONFIG="trusted-public-keys = $PUBKEY
+require-sigs = true" nix copy --from "$URL/chunked" --to "$WORK/chunked-store" "$TARGET" 2>&1 | tail -3
+check "chunked closure substitutes" "$(nix-store -qR "$TARGET" | wc -l)" "$(nix-store --store "$WORK/chunked-store" -qR "$TARGET" | wc -l)"
+
+AUTH=(-H "authorization: Bearer $PUSH_TOKEN")
+new_upload() { curl -s -X POST "${AUTH[@]}" "$URL/_api/v2/caches/chunked/uploads" | jq -r .id; }
+NAR="$WORK/one.nar.zst"
+nix-store --dump "$TARGET" | zstd -q >"$NAR"
+NAR_BYTES="$(stat -c %s "$NAR")"
+HALF=$((NAR_BYTES / 2))
+ID="$(new_upload)"
+head -c "$HALF" "$NAR" >"$WORK/part1"
+tail -c +$((HALF + 1)) "$NAR" >"$WORK/part2"
+check "chunk at the wrong offset" 409 "$(status -X PATCH "${AUTH[@]}" --data-binary @"$WORK/part2" "$URL/_api/v2/caches/chunked/uploads/$ID?offset=$HALF")"
+curl -s -o /dev/null -X PATCH "${AUTH[@]}" --data-binary @"$WORK/part1" "$URL/_api/v2/caches/chunked/uploads/$ID?offset=0"
+check "resume reads the offset" "$HALF" "$(curl -s "${AUTH[@]}" "$URL/_api/v2/caches/chunked/uploads/$ID" | jq .offset)"
+check "another token cannot see the upload" 404 "$(status -H "authorization: Bearer $PUSH_ONLY" "$URL/_api/v2/caches/secret/uploads/$ID")"
+curl -s -o /dev/null -X PATCH "${AUTH[@]}" --data-binary @"$WORK/part2" "$URL/_api/v2/caches/chunked/uploads/$ID?offset=$HALF"
+EXPECT="sha256:$(nix-store -q --hash "$TARGET" | cut -d: -f2)"
+check "completed upload has the NAR hash" "$EXPECT" "$(curl -s -X POST "${AUTH[@]}" "$URL/_api/v2/caches/chunked/uploads/$ID/complete" | jq -r .narHash)"
+check "completed upload is gone" 404 "$(status "${AUTH[@]}" "$URL/_api/v2/caches/chunked/uploads/$ID")"
+ID="$(new_upload)"
+check "garbage chunk rejected" 400 "$(status -X PATCH "${AUTH[@]}" --data-binary 'not zstd' "$URL/_api/v2/caches/chunked/uploads/$ID?offset=0")"
+check "rejected upload is dropped" 404 "$(status "${AUTH[@]}" "$URL/_api/v2/caches/chunked/uploads/$ID")"
 
 echo "=== push $TARGET"
 helios login ci "$URL" "$PUSH_TOKEN" >/dev/null

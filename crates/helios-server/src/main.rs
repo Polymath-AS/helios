@@ -1,6 +1,7 @@
 mod admin;
 mod audit;
 mod auth;
+mod chunked;
 mod config;
 mod db;
 mod error;
@@ -37,6 +38,9 @@ pub fn router(st: Shared) -> Router {
         .route("/caches/{cache}/missing", post(push::missing))
         .route("/caches/{cache}/nars/known", post(push::known))
         .route("/caches/{cache}/nar", put(push::upload).layer(DefaultBodyLimit::disable()))
+        .route("/caches/{cache}/uploads", post(chunked::create))
+        .route("/caches/{cache}/uploads/{id}", get(chunked::status).patch(chunked::append).delete(chunked::abort))
+        .route("/caches/{cache}/uploads/{id}/complete", post(chunked::complete))
         .route("/caches/{cache}/paths", post(push::publish))
         .route("/admin/caches", post(admin::create_cache).get(admin::list_caches))
         .route("/admin/tokens", post(admin::create_token).get(admin::list_tokens))
