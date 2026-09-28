@@ -5,7 +5,6 @@
 mod autogc;
 mod client;
 mod io;
-mod log;
 mod maint;
 mod metrics;
 mod scrub;
@@ -19,6 +18,7 @@ use std::sync::atomic::AtomicU64;
 use std::time::Duration;
 
 use clap::Parser;
+use tracing::Instrument;
 
 use crate::state::{Daemon, add};
 
@@ -138,9 +138,9 @@ where
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         interval.tick().await;
-        if let Err(e) = task().await {
+        if let Err(e) = task().instrument(tracing::info_span!("task", name)).await {
             add(errors, 1);
-            log::error!("{name}: {e:#}");
+            tracing::error!(task = name, error = format!("{e:#}"), "task failed");
         }
     }
 }
@@ -153,8 +153,19 @@ async fn shutdown() {
     futures_util::future::select(term, int).await;
 }
 
-fn main() -> anyhow::Result<()> {
-    log::init();
+fn main() -> std::process::ExitCode {
+    helios_log::init(helios_log::Style::Service);
+    // Fatal errors go through the logger too, so JSON and journald get them.
+    match run() {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(e) => {
+            tracing::error!("{e:#}");
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+fn run() -> anyhow::Result<()> {
     let args = Args::parse();
     anyhow::ensure!(
         (0.0..=1.0).contains(&args.quota_low) && args.quota_low < args.quota_high && args.quota_high <= 1.0,
@@ -203,13 +214,13 @@ fn main() -> anyhow::Result<()> {
             let d = d.clone();
             tasks.push(tokio::spawn(async move {
                 if let Err(e) = metrics::serve(d, addr).await {
-                    log::error!("metrics: {e:#}");
+                    tracing::error!(error = format!("{e:#}"), "metrics server failed");
                 }
             }));
         }
-        log::info!("helios-daemon started ({} tasks)", tasks.len());
+        tracing::info!(tasks = tasks.len(), "helios-daemon started");
         shutdown().await;
-        log::info!("shutting down");
+        tracing::info!("shutting down");
         Ok(())
     })
 }

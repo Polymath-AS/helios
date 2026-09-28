@@ -10,8 +10,9 @@ A self-hosted Nix binary cache: Rust server and CLI over a Zig core.
   by `crates/helios-core/build.rs`. `core/include/helios.h` is the contract.
 - `crates/helios-core`: safe Rust bindings to libhelios.
 - `crates/helios-server`, `crates/helios-cli`, `crates/helios-daemon`: the
-  binaries. The daemon drives the server over its maintenance socket and
-  never writes the database itself.
+  binaries. `crates/helios-log` sets up their logging. The daemon drives
+  the server over its maintenance socket and never writes the database
+  itself.
 - `nix/`: the NixOS module (`services.helios`), the OCI image, and their VM
   tests.
 - `bench/`: comparisons against Cachix's libraries and Nix C++. Not part of
@@ -35,9 +36,13 @@ coarse, such as a whole NAR or narinfo per call.
 Keep the dependency tree small; every crate is build time, audit surface and
 supply-chain risk. Before adding one, check whether libhelios, std or a few
 dozen lines cover it, and disable default features. Deliberately absent:
-reqwest (and `url`/`idna`), aws-lc-rs, tracing, parking_lot, uuid,
+reqwest (and `url`/`idna`), aws-lc-rs, parking_lot, uuid,
 hmac/sha2 (libhelios provides SHA-256, HMAC and randomness) and mimalloc
 (measured: no gain here).
+
+Logging is `tracing` with `tracing-subscriber` (fmt, ansi and json only; no
+`env-filter`, whose regex engine `Targets` makes unnecessary) and
+`tracing-journald`, set up once in `crates/helios-log`.
 
 ## Performance Rules
 

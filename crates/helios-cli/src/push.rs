@@ -117,10 +117,10 @@ async fn upload_all(client: &Client, cache: &str, paths: &[&PathInfo], opts: &Op
         match result {
             Ok(size) => {
                 bytes += size;
-                eprintln!("[{done}/{total}] {} {} → {} ({:.2}s)", name(&info.path), human(info.nar_size), human(size), took.as_secs_f64());
+                tracing::info!("[{done}/{total}] {} {} → {} ({:.2}s)", name(&info.path), human(info.nar_size), human(size), took.as_secs_f64());
             }
             Err(e) => {
-                eprintln!("[{done}/{total}] {} FAILED: {e:#}", name(&info.path));
+                tracing::error!("[{done}/{total}] {} failed: {e:#}", name(&info.path));
                 failures.push(info.path.clone());
             }
         }
@@ -143,7 +143,7 @@ pub async fn push(client: &Client, cache: &str, installables: &[String], opts: O
     }
     let todo: Vec<PathInfo> = infos.into_iter().filter(|i| missing.contains(&i.hash)).collect();
     if todo.is_empty() {
-        eprintln!("all {total} paths already in '{cache}'");
+        tracing::info!("all {total} paths already in '{cache}'");
         return Ok(());
     }
 
@@ -154,7 +154,7 @@ pub async fn push(client: &Client, cache: &str, installables: &[String], opts: O
         known.extend(client.known(cache, chunk).await?);
     }
     let uploads: Vec<&PathInfo> = todo.iter().filter(|i| !known.contains(&i.nar_hash)).collect();
-    eprintln!("{total} paths, {} missing from '{cache}': uploading {}, reusing {} NARs", todo.len(), uploads.len(), todo.len() - uploads.len());
+    tracing::info!("{total} paths, {} missing from '{cache}': uploading {}, reusing {} NARs", todo.len(), uploads.len(), todo.len() - uploads.len());
     let mut uploaded_bytes = upload_all(client, cache, &uploads, &opts).await?;
 
     let ordered = nix::topo_order(todo);
@@ -190,7 +190,7 @@ pub async fn push(client: &Client, cache: &str, installables: &[String], opts: O
     }
 
     let secs = started.elapsed().as_secs_f64();
-    eprintln!(
+    tracing::info!(
         "published {published} paths to '{cache}', uploaded {} in {secs:.2}s ({}/s)",
         human(uploaded_bytes),
         human((uploaded_bytes as f64 / secs.max(1e-3)) as u64)

@@ -6,7 +6,6 @@ mod db;
 mod error;
 mod gc;
 mod internal;
-mod log;
 mod push;
 mod read;
 mod state;
@@ -21,6 +20,7 @@ use axum::http::StatusCode;
 use axum::routing::{get, post, put};
 use clap::Parser;
 use serde_json::json;
+use tracing::Instrument;
 
 use crate::config::{Args, Config};
 use crate::state::{AppState, Shared};
@@ -48,7 +48,24 @@ pub fn router(st: Shared) -> Router {
         .route("/healthz", get(healthz))
         .nest("/_api/v2", api)
         .fallback(read::handle)
+        .layer(axum::middleware::from_fn(trace_request))
         .with_state(st)
+}
+
+/// Requests log at debug. Server errors log at warn with the request, which
+/// the handler's own error event does not name.
+async fn trace_request(req: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
+    let method = req.method().clone();
+    let uri = req.uri().clone();
+    let started = std::time::Instant::now();
+    let resp = next.run(req).instrument(tracing::debug_span!("request", %method, path = uri.path())).await;
+    let status = resp.status();
+    if status.is_server_error() {
+        tracing::warn!(%method, path = uri.path(), status = status.as_u16(), elapsed = ?started.elapsed(), "request failed");
+    } else {
+        tracing::debug!(%method, path = uri.path(), status = status.as_u16(), elapsed = ?started.elapsed(), "request");
+    }
+    resp
 }
 
 async fn healthz(State(st): State<Shared>) -> (StatusCode, axum::Json<serde_json::Value>) {
@@ -60,12 +77,14 @@ async fn healthz(State(st): State<Shared>) -> (StatusCode, axum::Json<serde_json
 
 pub async fn build_state(args: &Args) -> anyhow::Result<Shared> {
     let cfg = Config::from_args(args)?;
-    std::fs::create_dir_all(cfg.data_dir.join("nar"))?;
-    std::fs::create_dir_all(cfg.data_dir.join("tmp"))?;
+    for dir in ["nar", "tmp"] {
+        let dir = cfg.data_dir.join(dir);
+        std::fs::create_dir_all(&dir).map_err(|e| anyhow::anyhow!("creating {}: {e}", dir.display()))?;
+    }
     let db = db::Db::open(&cfg.data_dir.join("helios.db"))?;
     let signer = load_signer(args)?;
     if signer.is_none() {
-        crate::log::warning!("no signing key configured; narinfo will be unsigned");
+        tracing::warn!("no signing key configured; narinfo will be unsigned");
     }
     let (audit_tx, audit_rx) = tokio::sync::mpsc::unbounded_channel();
     tokio::spawn(audit::run(db.clone(), audit_rx));
@@ -75,8 +94,19 @@ pub async fn build_state(args: &Args) -> anyhow::Result<Shared> {
     Ok(st)
 }
 
-fn main() -> anyhow::Result<()> {
-    log::init();
+fn main() -> std::process::ExitCode {
+    helios_log::init(helios_log::Style::Service);
+    // Fatal errors go through the logger too, so JSON and journald get them.
+    match run() {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(e) => {
+            tracing::error!("{e:#}");
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+fn run() -> anyhow::Result<()> {
     let args = Args::parse();
 
     if let Some(config::Command::GenerateSecrets { dir, key_name }) = &args.command {
@@ -105,7 +135,7 @@ fn main() -> anyhow::Result<()> {
                 let listener = tokio::net::UnixListener::bind(path)?;
                 // Group access only: the socket directory decides who that is.
                 std::fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o660))?;
-                crate::log::info!("maintenance API on {}", path.display());
+                tracing::info!(socket = %path.display(), "maintenance API listening");
                 let serve = axum::serve(listener, internal::router(st.clone())).with_graceful_shutdown(stopped(stop_rx.clone()));
                 Some(tokio::spawn(async move { serve.await }))
             }
@@ -113,7 +143,7 @@ fn main() -> anyhow::Result<()> {
         };
 
         let listener = tokio::net::TcpListener::bind(args.listen).await?;
-        crate::log::info!("listening on {}", args.listen);
+        tracing::info!(addr = %args.listen, "listening");
         axum::serve(listener, router(st.clone()).into_make_service_with_connect_info::<SocketAddr>())
             .with_graceful_shutdown(stopped(stop_rx))
             .await?;
@@ -133,7 +163,7 @@ async fn shutdown_signal() {
     let term = std::pin::pin!(term.recv());
     let int = std::pin::pin!(tokio::signal::ctrl_c());
     futures_util::future::select(term, int).await;
-    crate::log::info!("shutting down");
+    tracing::info!("shutting down");
 }
 
 /// Writes `contents` to `path` only if it does not exist, readable by the
@@ -167,7 +197,7 @@ fn generate_secrets(dir: &std::path::Path, key_name: &str) -> anyhow::Result<()>
         ("admin-secret", create_secret(&dir.join("admin-secret"), random_hex)?),
     ] {
         if created {
-            log::info!("created {}", dir.join(name).display());
+            tracing::info!(path = %dir.join(name).display(), "created secret");
         }
     }
     let key = std::fs::read_to_string(&signing)?;

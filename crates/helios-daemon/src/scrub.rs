@@ -10,7 +10,6 @@ use helios_core::{Compression, Verifier};
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::log;
 use crate::state::{Daemon, add, now, set};
 
 #[derive(Deserialize, Clone)]
@@ -102,7 +101,7 @@ pub async fn run(d: &Daemon, rate: u64) -> anyhow::Result<()> {
                 }
             };
             if let Some(reason) = reason {
-                log::error!("scrub: blob {} is bad ({reason}); quarantining", b.file_hash);
+                tracing::error!(blob = %b.file_hash, %reason, "bad blob, quarantining");
                 // A blob GC removed since it was listed is already gone.
                 if let Err(e) = d.client.post::<serde_json::Value>("/v1/quarantine", json!({ "fileHash": b.file_hash, "reason": reason })).await
                     && !e.to_string().contains("404")
@@ -119,6 +118,6 @@ pub async fn run(d: &Daemon, rate: u64) -> anyhow::Result<()> {
         }
     }
     set(&d.metrics.scrub_last_complete, now());
-    log::info!("scrub: checked {blobs} blobs ({bytes} bytes) in {:.0?}", started.elapsed());
+    tracing::info!(blobs, bytes, elapsed = ?started.elapsed(), "scrub finished");
     Ok(())
 }

@@ -36,9 +36,22 @@ Every flag can also be set through its environment variable.
 | `--upload-grace-seconds` | `HELIOS_UPLOAD_GRACE_SECONDS` | `3600`: an unpublished upload is kept this long |
 | `--admin-socket` | `HELIOS_ADMIN_SOCKET` | unset: no maintenance API (see helios-daemon) |
 
-Secret files must hold at least 16 bytes. `HELIOS_LOG` sets the log level
-(`error`, `warn`, `info` or `debug`; default `info`). Under systemd, log lines
-carry journald priorities.
+Secret files must hold at least 16 bytes.
+
+## Logging
+
+The server, daemon and CLI log through `tracing`, configured the same way:
+
+| Variable | |
+|----------|--|
+| `HELIOS_LOG` | a level (`error`, `warn`, `info`, `debug`, `trace`; default `info`), optionally with per-target directives, such as `info,helios_server=debug` |
+| `HELIOS_LOG_FORMAT` | `journald`, `json` or `text`. The default is `journald` under systemd and `text` otherwise |
+
+Under journald, events are structured entries: their fields (`blob`,
+`cache`, `bytes` and so on) are journal fields, so `journalctl -u helios
+PRIORITY=4` or `journalctl BLOB=<hash>` filters on them. `json` writes one
+object per line for container log collectors. Requests log at `debug`; a
+request that fails with a 5xx logs at `warn` with its method and path.
 
 The server links the system SQLite; build with `--features bundled-sqlite`
 to compile SQLite in instead.
@@ -148,7 +161,8 @@ instead, for example as Docker secrets, set all three of
 
 Both binaries take their flags as `HELIOS_*` environment variables (see
 `helios-server --help` and `helios-daemon --help`), such as `HELIOS_QUOTA`,
-`HELIOS_MIN_FREE`, `HELIOS_METRICS_LISTEN` and `HELIOS_LOG`. Set
+`HELIOS_MIN_FREE`, `HELIOS_METRICS_LISTEN`, `HELIOS_LOG` and
+`HELIOS_LOG_FORMAT=json` (see [Logging](#logging)). Set
 `HELIOS_DAEMON=0` to run the server alone. `docker stop` shuts both down
 cleanly; if either exits on its own, the container exits non-zero so the
 restart policy takes over. The image has no reverse proxy: put one in front

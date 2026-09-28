@@ -111,7 +111,7 @@ impl AppState {
             Ok((caches, index, tokens))
         })?;
 
-        crate::log::info!("loaded state: {} caches, {} paths, {} tokens", caches.len(), index.len(), tokens.len());
+        tracing::info!(caches = caches.len(), paths = index.len(), tokens = tokens.len(), "loaded state");
         let narinfo = quick_cache::sync::Cache::with(
             cfg.narinfo_cache_entries,
             cfg.narinfo_cache_entries as u64,

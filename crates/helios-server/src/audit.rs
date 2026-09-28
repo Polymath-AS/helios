@@ -83,8 +83,8 @@ pub async fn run(db: Db, mut rx: mpsc::UnboundedReceiver<AuditEvent>) {
         .await;
         match result {
             Ok(Ok(())) => {}
-            Ok(Err(e)) => crate::log::error!("writing audit log: {e}"),
-            Err(e) => crate::log::error!("audit writer panicked: {e}"),
+            Ok(Err(e)) => tracing::error!(error = %e, "writing audit log"),
+            Err(e) => tracing::error!(error = %e, "audit writer panicked"),
         }
     }
 }

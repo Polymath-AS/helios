@@ -162,7 +162,7 @@ async fn evict(State(st): State<Shared>, Json(req): Json<EvictReq>) -> ApiResult
         // Stop serving before the files go.
         forget(&st, &keys);
         let (blobs, bytes) = crate::gc::collect_blobs(&st).map_err(internal)?;
-        crate::log::info!("evicted {evicted} paths, freeing {blobs} blobs ({bytes} bytes)");
+        tracing::info!(paths = evicted, blobs, bytes, "evicted");
         Ok(Json(json!({ "evicted": evicted, "freedBlobs": blobs, "freedBytes": bytes })))
     })
     .await
@@ -249,10 +249,10 @@ async fn quarantine(State(st): State<Shared>, Json(req): Json<QuarantineReq>) ->
             if let Err(e) = moved
                 && e.kind() != std::io::ErrorKind::NotFound
             {
-                crate::log::warning!("moving quarantined blob: {e}");
+                tracing::warn!(error = %e, "moving quarantined blob");
             }
         }
-        crate::log::warning!("quarantined blob {}: {} ({} paths unpublished)", req.file_hash, req.reason, keys.len());
+        tracing::warn!(blob = %req.file_hash, reason = %req.reason, unpublished = keys.len(), "quarantined blob");
         Ok(Json(json!({ "pathsRemoved": keys.len() })))
     })
     .await

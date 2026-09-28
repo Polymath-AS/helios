@@ -7,7 +7,6 @@
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::log;
 use crate::state::{Daemon, add, now, set};
 
 #[derive(Clone, Copy, Debug)]
@@ -87,7 +86,7 @@ pub async fn run(d: &Daemon, policy: &Policy) -> anyhow::Result<()> {
     if need == 0 {
         return Ok(());
     }
-    log::info!("auto-gc: {referenced} bytes of NARs in use, freeing {need}");
+    tracing::info!(referenced, need, "over quota, evicting");
     let (mut evicted, mut freed) = (0u64, 0u64);
     for _ in 0..MAX_ROUNDS {
         let lru: Lru = d.client.get("/v1/lru?limit=500").await?;
@@ -119,7 +118,7 @@ pub async fn run(d: &Daemon, policy: &Policy) -> anyhow::Result<()> {
     }
     add(&d.metrics.gc_evicted_paths, evicted);
     add(&d.metrics.gc_freed_bytes, freed);
-    log::info!("auto-gc: evicted {evicted} paths, {freed} bytes deleted now (the rest after the upload grace period)");
+    tracing::info!(paths = evicted, freed_now = freed, "evicted (the rest is freed after the upload grace period)");
     Ok(())
 }
 

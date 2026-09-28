@@ -31,9 +31,9 @@ pub async fn run_forever(st: Shared) {
         interval.tick().await;
         let st2 = st.clone();
         match tokio::task::spawn_blocking(move || collect(&st2)).await {
-            Ok(Ok(stats)) => crate::log::info!("gc finished: {stats:?}"),
-            Ok(Err(e)) => crate::log::error!("gc failed: {e}"),
-            Err(e) => crate::log::error!("gc panicked: {e}"),
+            Ok(Ok(stats)) => tracing::info!(?stats, "gc finished"),
+            Ok(Err(e)) => tracing::error!(error = %e, "gc failed"),
+            Err(e) => tracing::error!(error = %e, "gc panicked"),
         }
     }
 }
@@ -97,7 +97,7 @@ pub fn collect_blobs(st: &Shared) -> anyhow::Result<(usize, u64)> {
                 match std::fs::remove_file(st.nar_path(&hash, compression)) {
                     Ok(()) => freed += size,
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                    Err(e) => crate::log::warning!("removing blob file: {e}"),
+                    Err(e) => tracing::warn!(error = %e, "removing blob file"),
                 }
             }
             Ok(victims.len())
@@ -136,8 +136,8 @@ pub async fn run_access_flush(st: Shared) {
         let st2 = st.clone();
         match tokio::task::spawn_blocking(move || flush_access(&st2)).await {
             Ok(Ok(_)) => {}
-            Ok(Err(e)) => crate::log::error!("flushing access times: {e}"),
-            Err(e) => crate::log::error!("access flush panicked: {e}"),
+            Ok(Err(e)) => tracing::error!(error = %e, "flushing access times"),
+            Err(e) => tracing::error!(error = %e, "access flush panicked"),
         }
     }
 }

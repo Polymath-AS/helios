@@ -121,7 +121,7 @@ fn print(v: &Value) {
 async fn run(cli: Cli) -> anyhow::Result<()> {
     if let Command::Login { name, url, token } = &cli.command {
         config::login(name, url, token)?;
-        println!("logged in to '{name}' at {url}");
+        tracing::info!("logged in to '{name}' at {url}");
         return Ok(());
     }
     // Runs inside the nix-daemon's post-build hook: no server needed, and it
@@ -161,7 +161,7 @@ async fn run(cli: Cli) -> anyhow::Result<()> {
                     json!({ "subject": subject, "caches": split(&caches), "perms": split(&perms), "expiresInDays": expires }),
                 )
                 .await?;
-            eprintln!("store this token now; it is not shown again");
+            tracing::warn!("store this token now; it is not shown again");
             print(&v);
         }
         Command::Token(TokenCmd::List) => print(&client.admin_get("/admin/tokens").await?),
@@ -180,10 +180,11 @@ fn main() {
         // SAFETY: single-threaded; the runtime has not started yet.
         unsafe { std::env::set_var("SSL_CERT_FILE", file) };
     }
+    helios_log::init(helios_log::Style::Cli);
     let cli = Cli::parse();
     let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build().expect("starting the tokio runtime");
     if let Err(e) = runtime.block_on(run(cli)) {
-        eprintln!("error: {e:#}");
+        tracing::error!("{e:#}");
         std::process::exit(1);
     }
 }

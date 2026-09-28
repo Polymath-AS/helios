@@ -14,7 +14,6 @@ use hyper::service::service_fn;
 use serde_json::Value;
 
 use crate::io::Io;
-use crate::log;
 use crate::state::Daemon;
 
 fn line(out: &mut String, name: &str, kind: &str, help: &str, samples: &[(&str, u64)]) {
@@ -90,7 +89,7 @@ pub async fn render(d: &Daemon) -> String {
 
 pub async fn serve(d: Arc<Daemon>, addr: SocketAddr) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    log::info!("metrics on http://{addr}/metrics");
+    tracing::info!(url = %format_args!("http://{addr}/metrics"), "metrics listening");
     loop {
         let (stream, _) = listener.accept().await?;
         let d = d.clone();

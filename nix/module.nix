@@ -130,8 +130,10 @@ in
     };
 
     logLevel = mkOption {
-      type = types.enum [ "error" "warn" "info" "debug" ];
+      type = types.str;
       default = "info";
+      example = "info,helios_server=debug";
+      description = "HELIOS_LOG for the server and daemon: a level, optionally with per-target directives.";
     };
 
     settings = {

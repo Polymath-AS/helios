@@ -49,7 +49,7 @@ fn pending(spool: &Path) -> anyhow::Result<Vec<PathBuf>> {
 }
 
 pub async fn watch(client: &Client, cache: &str, spool: &Path, opts: push::Options) -> anyhow::Result<()> {
-    eprintln!("watching {} for paths to push to '{cache}'", spool.display());
+    tracing::info!(spool = %spool.display(), cache, "watching for paths to push");
     let mut backoff = POLL;
     loop {
         let entries = pending(spool)?;
@@ -75,7 +75,7 @@ pub async fn watch(client: &Client, cache: &str, spool: &Path, opts: push::Optio
                 backoff = POLL;
             }
             Err(e) => {
-                eprintln!("push failed, retrying in {}s: {e:#}", backoff.as_secs());
+                tracing::warn!(retry_in = ?backoff, error = format!("{e:#}"), "push failed");
                 tokio::time::sleep(backoff).await;
                 backoff = (backoff * 2).min(MAX_BACKOFF);
             }
