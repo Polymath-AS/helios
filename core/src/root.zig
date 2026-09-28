@@ -191,6 +191,15 @@ export fn hl_signer_public_key(s: *const narinfo.Signer, out: ?[*]u8, cap: usize
     return copyOut(list.items, out, cap, out_len);
 }
 
+/// A detached signature over `msg`, as `<name>:<base64>`.
+export fn hl_signer_sign(s: *const narinfo.Signer, msg: ?[*]const u8, msg_len: usize, out: ?[*]u8, cap: usize, out_len: *usize) c_int {
+    var list: std.ArrayList(u8) = .empty;
+    defer list.deinit(gpa);
+    const m: []const u8 = if (msg) |p| p[0..msg_len] else "";
+    s.sign(&list, gpa, m) catch |e| return code(e);
+    return copyOut(list.items, out, cap, out_len);
+}
+
 pub const Str = extern struct {
     ptr: ?[*]const u8,
     len: usize,

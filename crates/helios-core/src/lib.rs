@@ -68,6 +68,7 @@ mod sys {
         pub fn hl_signer_new(key: *const u8, len: usize) -> *mut Signer;
         pub fn hl_signer_free(s: *mut Signer);
         pub fn hl_signer_public_key(s: *const Signer, out: *mut u8, cap: usize, out_len: *mut usize) -> c_int;
+        pub fn hl_signer_sign(s: *const Signer, msg: *const u8, msg_len: usize, out: *mut u8, cap: usize, out_len: *mut usize) -> c_int;
         pub fn hl_signer_generate(name: *const u8, name_len: usize, out: *mut u8, cap: usize, out_len: *mut usize) -> c_int;
         pub fn hl_narinfo_render(input: *const NarinfoInput, signer: *const Signer, out: *mut *mut u8, out_len: *mut usize) -> c_int;
         pub fn hl_free(ptr: *mut u8, len: usize);
@@ -332,6 +333,17 @@ impl Signer {
         buf.truncate(len);
         String::from_utf8(buf).expect("key name was valid UTF-8")
     }
+
+    /// A detached signature over `msg`, as `<name>:<base64>`.
+    pub fn sign(&self, msg: &[u8]) -> String {
+        // Room for the key name (as in public_key) plus 88 base64 characters.
+        let mut buf = vec![0u8; 512];
+        let mut len = 0usize;
+        let rc = unsafe { sys::hl_signer_sign(self.raw, msg.as_ptr(), msg.len(), buf.as_mut_ptr(), buf.len(), &mut len) };
+        assert_eq!(rc, 0, "signature fits in 512 bytes");
+        buf.truncate(len);
+        String::from_utf8(buf).expect("key name was valid UTF-8")
+    }
 }
 
 impl Drop for Signer {
@@ -477,6 +489,33 @@ mod tests {
         assert_ne!(key, Signer::generate("gen-1").unwrap());
         assert!(Signer::new(&key).unwrap().public_key().starts_with("gen-1:"));
         assert!(Signer::generate("bad:name").is_err());
+    }
+
+    #[test]
+    fn detached_signature_matches_the_narinfo_one() {
+        // The same key over the same fingerprint gives the narinfo's Sig.
+        let signer = Signer::new(KEY).unwrap();
+        let path = "/nix/store/7rjj86a15146cq1d3qy068lml7n8ykzm-hello-2.12";
+        let nar_hash = [7u8; 32];
+        let narinfo = render_narinfo(
+            &NarinfoInput {
+                store_path: path,
+                nar_hash: &nar_hash,
+                nar_size: 1234,
+                file_hash: &[9u8; 32],
+                file_size: 100,
+                compression: "zstd",
+                references: "",
+                deriver: "",
+                system: "",
+            },
+            Some(&signer),
+        )
+        .unwrap();
+        let text = String::from_utf8(narinfo).unwrap();
+        let sig = text.lines().find_map(|l| l.strip_prefix("Sig: ")).unwrap();
+        let fingerprint = format!("1;{path};sha256:{};1234;", nix32_encode(&nar_hash));
+        assert_eq!(signer.sign(fingerprint.as_bytes()), sig);
     }
 
     #[test]
