@@ -132,6 +132,8 @@ pkgs.dockerTools.buildLayeredImage {
       "org.opencontainers.image.title" = "helios";
       "org.opencontainers.image.description" = "Self-hosted Nix binary cache";
       "org.opencontainers.image.version" = helios.version;
+      # Links the GHCR package to the repository.
+      "org.opencontainers.image.source" = "https://github.com/Polymath-AS/helios";
     };
   };
 }

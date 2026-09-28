@@ -50,6 +50,10 @@ hmac/sha2 (libhelios provides SHA-256, HMAC and randomness) and mimalloc
 
 ## Verification
 
+CI (`.github/workflows/ci.yml`) runs all of this on x86_64 and aarch64
+(the VM tests on x86_64 only) and publishes the image on pushes.
+
+- `cargo fmt --check` and `cargo clippy --release --all-targets -- -D warnings`
 - `cargo test --release`
 - `./scripts/test-zig.sh`
 - `nix build .#checks.x86_64-linux.nixos` after changing `nix/`: a VM test of

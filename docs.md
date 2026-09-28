@@ -124,14 +124,15 @@ a scrub that catches a corrupted NAR, watch-store, eviction and shutdown.
 
 ## Docker
 
-`packages.<system>.docker` is an OCI image with the server and the
-maintenance daemon, running as uid 10000 with all state in
-`/var/lib/helios`:
+`ghcr.io/polymath-as/helios` is an OCI image with the server and the
+maintenance daemon for x86_64 and aarch64, running as uid 10000 with all
+state in `/var/lib/helios`. CI publishes `latest` and the version for each
+`v*` tag, `master` for the branch, and `sha-<commit>` for every build. To
+build it yourself, `nix build .#docker` gives a tarball for `docker load`.
 
 ```sh
-docker load < "$(nix build .#docker --print-out-paths)"
 docker run -d --name helios -p 8080:8080 -v helios:/var/lib/helios \
-  -e HELIOS_QUOTA=500G helios:0.1.0
+  -e HELIOS_QUOTA=500G ghcr.io/polymath-as/helios:latest
 docker exec helios helios-public-key      # for trusted-public-keys
 docker exec helios helios-admin cache create main
 docker exec helios helios-admin token create ci --caches main --perms push,pull
