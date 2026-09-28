@@ -82,18 +82,18 @@ fn basename(s: &str) -> &str {
 }
 
 /// An entry in either format, validated.
-enum Parsed<'a> {
+enum Parsed {
     /// `<drv basename>`, `<output>`.
-    Current(&'a str, &'a str),
+    Current(String, String),
     /// `sha256:<hex>!<output>`.
-    Legacy(&'a str),
+    Legacy(String),
 }
 
-impl Parsed<'_> {
+impl Parsed {
     fn id(&self) -> String {
         match self {
             Parsed::Current(drv, output) => format!("{drv}/{output}"),
-            Parsed::Legacy(id) => (*id).to_owned(),
+            Parsed::Legacy(id) => id.clone(),
         }
     }
 }
@@ -108,7 +108,7 @@ fn legacy_id_valid(id: &str) -> bool {
 /// `UnkeyedRealisation::fingerprint` produces for the format: the entry's
 /// JSON with keys sorted and the signatures removed. Every value is limited
 /// to store path and hash characters, so no JSON escaping is involved.
-fn render(st: &Shared, entry: &Parsed<'_>, out: &str) -> Vec<u8> {
+fn render(st: &Shared, entry: &Parsed, out: &str) -> Vec<u8> {
     let sign = |fingerprint: String| st.signer.as_ref().map(|s| s.sign(fingerprint.as_bytes()));
     let body = match entry {
         Parsed::Current(drv, output) => {
@@ -185,13 +185,13 @@ pub async fn publish(
                     if !output_name_valid(&key.output_name) {
                         return Err(ApiError::bad_request(format!("invalid output name: {}", key.output_name)));
                     }
-                    (Parsed::Current(drv, &key.output_name), basename(&value.out_path))
+                    (Parsed::Current(drv.to_owned(), key.output_name.clone()), basename(&value.out_path))
                 }
                 Entry::Legacy { id, out_path } => {
                     if !legacy_id_valid(id) {
                         return Err(ApiError::bad_request(format!("invalid build trace id: {id}")));
                     }
-                    (Parsed::Legacy(id), basename(out_path))
+                    (Parsed::Legacy(id.clone()), basename(out_path))
                 }
             };
             let key = out_key(cache.id, out).ok_or_else(|| ApiError::bad_request(format!("invalid output path: {out}")))?;
@@ -199,7 +199,8 @@ pub async fn publish(
                 missing.push(format!("/nix/store/{out}"));
                 continue;
             }
-            rows.push((parsed.id(), out.to_owned(), key, render(&st, &parsed, out)));
+            // Signed later, off the index lock.
+            rows.push((parsed, out.to_owned(), key));
         }
     }
     if !missing.is_empty() {
@@ -208,22 +209,28 @@ pub async fn publish(
 
     let st2 = st.clone();
     let inserted = tokio::task::spawn_blocking(move || -> ApiResult<Vec<(TraceKey, Trace)>> {
+        let rendered: Vec<_> = rows.into_iter().map(|(parsed, out, key)| (parsed.id(), render(&st2, &parsed, &out), out, key)).collect();
         let now = crate::db::now();
         st2.db
             .write(|conn| -> rusqlite::Result<Vec<(TraceKey, Trace)>> {
                 let tx = conn.transaction()?;
                 let mut inserted = Vec::new();
                 {
-                    // The first entry for an output wins, as for paths: a
-                    // non-deterministic build must not flip what is served.
-                    let mut insert = tx.prepare_cached(
-                        "INSERT INTO build_traces (cache_id, id, out_path, body, created_at)
-                         VALUES (?1, ?2, ?3, ?4, ?5) ON CONFLICT DO NOTHING",
+                    let mut upsert = tx.prepare_cached(
+                        "INSERT INTO build_traces (cache_id, id, out_path, body, created_at) VALUES (?1, ?2, ?3, ?4, ?5)
+                         ON CONFLICT (cache_id, id) DO UPDATE SET out_path = excluded.out_path, body = excluded.body, created_at = excluded.created_at",
                     )?;
-                    for (id, out, key, body) in rows {
-                        if insert.execute(params![cache.id, id, out, body, now])? > 0 {
-                            inserted.push((TraceKey { cache: cache.id, id: id.into() }, Trace { out: key, body: body.into() }));
+                    let (traces, index) = (st2.traces.rd(), st2.index.rd());
+                    for (id, body, out, key) in rendered {
+                        let trace_key = TraceKey { cache: cache.id, id: id.as_str().into() };
+                        // The first entry for an output wins while its path is
+                        // served, so a non-deterministic build cannot flip it;
+                        // once that path is gone, a newer build may take over.
+                        if traces.get(&trace_key).is_some_and(|t| index.contains(&t.out)) {
+                            continue;
                         }
+                        upsert.execute(params![cache.id, id, out, body, now])?;
+                        inserted.push((trace_key, Trace { out: key, body: body.into() }));
                     }
                 }
                 tx.commit()?;

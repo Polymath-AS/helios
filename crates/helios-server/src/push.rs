@@ -33,6 +33,18 @@ const MAX_MISSING_BATCH: usize = 100_000;
 const MAX_PUBLISH_BATCH: usize = 5_000;
 const STORE_DIR: &str = "/nix/store/";
 
+/// SQL condition on blob `b`: the cache bound to parameter `?n` may reuse
+/// it without uploading. That holds for a blob uploaded to or published in
+/// that cache, and for one a public cache serves, which anyone can fetch.
+/// Anything else would let a push token for one cache publish, and so
+/// read, another cache's private NARs by their hash.
+fn reusable(n: u8) -> String {
+    format!(
+        "(EXISTS (SELECT 1 FROM blob_caches bc WHERE bc.blob_id = b.id AND bc.cache_id = ?{n})
+          OR EXISTS (SELECT 1 FROM paths p JOIN caches c ON c.id = p.cache_id WHERE p.blob_id = b.id AND c.is_public = 1))"
+    )
+}
+
 pub(crate) fn cache_for(st: &Shared, name: &str) -> ApiResult<CacheInfo> {
     st.cache(name).ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "cache not found"))
 }
@@ -81,7 +93,7 @@ pub async fn known(
     headers: HeaderMap,
     Json(req): Json<KnownReq>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    cache_for(&st, &name)?;
+    let cache = cache_for(&st, &name)?;
     st.authorize(&headers, &name, Perm::Push)?;
     if req.nar_hashes.len() > MAX_MISSING_BATCH {
         return Err(ApiError::bad_request(format!("at most {MAX_MISSING_BATCH} hashes per request")));
@@ -91,8 +103,8 @@ pub async fn known(
     let values: Vec<Value> = parsed.iter().flatten().map(|h| Value::Blob(h.to_vec())).collect();
     let found = tokio::task::spawn_blocking(move || {
         db.read(|conn| {
-            let mut stmt = conn.prepare_cached("SELECT DISTINCT nar_hash FROM blobs WHERE nar_hash IN rarray(?1)")?;
-            let rows = stmt.query_map([Rc::new(values)], |r| r.get::<_, Vec<u8>>(0))?;
+            let mut stmt = conn.prepare_cached(&format!("SELECT DISTINCT nar_hash FROM blobs b WHERE nar_hash IN rarray(?1) AND {}", reusable(2)))?;
+            let rows = stmt.query_map(params![Rc::new(values), cache.id], |r| r.get::<_, Vec<u8>>(0))?;
             rows.collect::<rusqlite::Result<std::collections::HashSet<Vec<u8>>>>()
         })
     })
@@ -120,7 +132,7 @@ pub async fn upload(
     headers: HeaderMap,
     body: Body,
 ) -> ApiResult<(StatusCode, Json<UploadResp>)> {
-    cache_for(&st, &name)?;
+    let cache = cache_for(&st, &name)?;
     let identity = st.authorize(&headers, &name, Perm::Push)?;
     let requested = uri.query().unwrap_or("").split('&').find_map(|kv| kv.strip_prefix("compression=")).unwrap_or("zstd");
     let compression = Compression::parse(requested).ok_or_else(|| ApiError::bad_request("compression must be zstd or none"))?;
@@ -129,17 +141,19 @@ pub async fn upload(
     let (tx, mut rx) = tokio::sync::mpsc::channel::<Bytes>(32);
     let worker_tmp = tmp.clone();
     // Disk writes, hashing and decompression happen off the async runtime.
-    let worker = tokio::task::spawn_blocking(move || -> Result<helios_core::Digest, String> {
-        let file = std::fs::File::create_new(&worker_tmp).map_err(|e| e.to_string())?;
+    // A bad stream is the client's error (400); a failed write is ours (500).
+    let worker = tokio::task::spawn_blocking(move || -> ApiResult<helios_core::Digest> {
+        let invalid = |e: helios_core::Error| ApiError::bad_request(format!("invalid NAR stream: {e}"));
+        let file = std::fs::File::create_new(&worker_tmp).map_err(ApiError::internal)?;
         let mut out = std::io::BufWriter::with_capacity(1 << 20, file);
-        let mut verifier = Verifier::new(compression).map_err(|e| e.to_string())?;
+        let mut verifier = Verifier::new(compression).map_err(ApiError::internal)?;
         while let Some(chunk) = rx.blocking_recv() {
-            verifier.update(&chunk).map_err(|e| format!("invalid NAR stream: {e}"))?;
-            out.write_all(&chunk).map_err(|e| e.to_string())?;
+            verifier.update(&chunk).map_err(invalid)?;
+            out.write_all(&chunk).map_err(ApiError::internal)?;
         }
-        let file = out.into_inner().map_err(|e| e.to_string())?;
-        file.sync_data().map_err(|e| e.to_string())?;
-        verifier.finish().map_err(|e| format!("invalid NAR stream: {e}"))
+        let file = out.into_inner().map_err(|e| ApiError::internal(e.into_error()))?;
+        file.sync_data().map_err(ApiError::internal)?;
+        verifier.finish().map_err(invalid)
     });
 
     let mut stream = body.into_data_stream();
@@ -171,49 +185,76 @@ pub async fn upload(
             audit.log(&st, &identity, "nar.upload", Some(&name), err.status, json!({ "error": err.message }));
             return Err(err);
         }
-        (None, Err(msg)) => {
+        (None, Err(err)) => {
             let _ = tokio::fs::remove_file(&tmp).await;
-            let err = ApiError::bad_request(msg);
             audit.log(&st, &identity, "nar.upload", Some(&name), err.status, json!({ "error": err.message }));
             return Err(err);
         }
         (None, Ok(d)) => d,
     };
 
-    let resp = store_blob(&st, tmp, digest, compression).await?;
+    let resp = store_blob(&st, cache.id, tmp, digest, compression).await?;
     audit.log(&st, &identity, "nar.upload", Some(&name), StatusCode::CREATED, json!({ "fileHash": resp.file_hash, "size": resp.file_size }));
     Ok((StatusCode::CREATED, Json(resp)))
 }
 
-/// Moves a verified upload at `tmp` into the blob store and records it.
-pub(crate) async fn store_blob(st: &Shared, tmp: std::path::PathBuf, digest: helios_core::Digest, compression: Compression) -> ApiResult<UploadResp> {
+/// Moves a verified upload at `tmp` into the blob store and records it as
+/// held by `cache_id`: uploading a NAR entitles that cache to reuse it.
+pub(crate) async fn store_blob(
+    st: &Shared,
+    cache_id: u32,
+    tmp: std::path::PathBuf,
+    digest: helios_core::Digest,
+    compression: Compression,
+) -> ApiResult<UploadResp> {
     let dest = st.nar_path(&digest.file_hash, compression);
     let st2 = st.clone();
     tokio::task::spawn_blocking(move || -> ApiResult<()> {
-        if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent).map_err(ApiError::internal)?;
-        }
+        let parent = dest.parent().expect("blob paths have a parent");
+        std::fs::create_dir_all(parent).map_err(ApiError::internal)?;
         // Rename and row upsert happen under the writer lock so GC can never
         // delete the file between them. Renaming over an existing blob is
         // harmless: the content is identical by hash.
         st2.db.write(|conn| -> ApiResult<()> {
-            std::fs::rename(&tmp, &dest).map_err(ApiError::internal)?;
-            conn.prepare_cached(
-                "INSERT INTO blobs (file_hash, file_size, compression, nar_hash, nar_size, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-                 ON CONFLICT (file_hash) DO UPDATE SET created_at = excluded.created_at",
-            )?
-            .execute(params![
-                &digest.file_hash[..],
-                digest.file_size,
-                compression.as_str(),
-                &digest.nar_hash[..],
-                digest.nar_size,
-                crate::db::now()
-            ])?;
+            match std::fs::rename(&tmp, &dest) {
+                Ok(()) => {}
+                // GC removed an upload left idle past the grace period.
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    return Err(ApiError::new(StatusCode::NOT_FOUND, "the upload expired before it completed; upload the NAR again"));
+                }
+                Err(e) => return Err(ApiError::internal(e)),
+            }
+            // The rename must survive a crash before a row refers to it.
+            std::fs::File::open(parent).and_then(|d| d.sync_all()).map_err(ApiError::internal)?;
+            let recorded = (|| -> rusqlite::Result<()> {
+                let tx = conn.transaction()?;
+                tx.prepare_cached(
+                    "INSERT INTO blobs (file_hash, file_size, compression, nar_hash, nar_size, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                     ON CONFLICT (file_hash) DO UPDATE SET created_at = excluded.created_at",
+                )?
+                .execute(params![
+                    &digest.file_hash[..],
+                    digest.file_size,
+                    compression.as_str(),
+                    &digest.nar_hash[..],
+                    digest.nar_size,
+                    crate::db::now()
+                ])?;
+                tx.prepare_cached("INSERT OR IGNORE INTO blob_caches (blob_id, cache_id) SELECT id, ?2 FROM blobs WHERE file_hash = ?1")?
+                    .execute(params![&digest.file_hash[..], cache_id])?;
+                tx.commit()
+            })();
+            if let Err(e) = recorded {
+                // A file without a row is never collected; remove it unless
+                // an earlier upload of the same NAR owns it.
+                if conn.query_row("SELECT 1 FROM blobs WHERE file_hash = ?1", [&digest.file_hash[..]], |_| Ok(())).is_err() {
+                    let _ = std::fs::remove_file(&dest);
+                }
+                return Err(e.into());
+            }
             Ok(())
-        })?;
-        Ok(())
+        })
     })
     .await??;
 
@@ -288,6 +329,7 @@ struct Rendered {
     key: PathKey,
     store_path: String,
     blob_id: i64,
+    file_hash: [u8; 32],
     narinfo: Vec<u8>,
 }
 
@@ -367,12 +409,6 @@ pub async fn publish(
 
     let published = rendered_keys.len();
     st.counters.published_paths.add(published as u64);
-    {
-        let mut index = st.index.wr();
-        for key in rendered_keys {
-            index.insert(key);
-        }
-    }
     audit.log(&st, &identity, "path.publish", Some(&name), StatusCode::CREATED, json!({ "published": published, "alreadyExisted": already }));
     Ok((StatusCode::CREATED, Json(json!({ "published": published, "alreadyExisted": already }))))
 }
@@ -393,12 +429,15 @@ struct Blob {
 fn render_and_insert(st: &Shared, prepared: Vec<Prepared>) -> ApiResult<Outcome> {
     // Resolve blobs on a read connection, outside the writer lock.
     let blobs: Vec<Option<Blob>> = st.db.read(|conn| {
-        let mut by_nar = conn.prepare_cached(
-            "SELECT id, file_hash, file_size, compression, nar_size FROM blobs
-             WHERE nar_hash = ?1 ORDER BY compression = 'zstd' DESC, id LIMIT 1",
-        )?;
-        let mut by_file =
-            conn.prepare_cached("SELECT id, file_hash, file_size, compression, nar_size FROM blobs WHERE file_hash = ?1 AND nar_hash = ?2")?;
+        let mut by_nar = conn.prepare_cached(&format!(
+            "SELECT id, file_hash, file_size, compression, nar_size FROM blobs b
+             WHERE nar_hash = ?1 AND {} ORDER BY compression = 'zstd' DESC, id LIMIT 1",
+            reusable(2)
+        ))?;
+        let mut by_file = conn.prepare_cached(&format!(
+            "SELECT id, file_hash, file_size, compression, nar_size FROM blobs b WHERE file_hash = ?1 AND nar_hash = ?3 AND {}",
+            reusable(2)
+        ))?;
         let row = |r: &rusqlite::Row<'_>| {
             Ok(Blob {
                 id: r.get(0)?,
@@ -411,8 +450,8 @@ fn render_and_insert(st: &Shared, prepared: Vec<Prepared>) -> ApiResult<Outcome>
         prepared
             .iter()
             .map(|p| match &p.file_hash {
-                Some(fh) => by_file.query_row(params![&fh[..], &p.nar_hash[..]], row).optional(),
-                None => by_nar.query_row(params![&p.nar_hash[..]], row).optional(),
+                Some(fh) => by_file.query_row(params![&fh[..], p.key.cache, &p.nar_hash[..]], row).optional(),
+                None => by_nar.query_row(params![&p.nar_hash[..], p.key.cache], row).optional(),
             })
             .collect()
     })?;
@@ -434,38 +473,50 @@ fn render_and_insert(st: &Shared, prepared: Vec<Prepared>) -> ApiResult<Outcome>
     let rendered: Vec<Rendered> = rendered.into_iter().collect::<Result<_, _>>()?;
 
     let now = crate::db::now();
-    let keys = st.db.write(|conn| {
+    st.db.write(|conn| -> ApiResult<Outcome> {
         let tx = conn.transaction()?;
         let mut keys = Vec::with_capacity(rendered.len());
+        let mut gone = Vec::new();
         {
-            let mut blob_exists = tx.prepare_cached("SELECT 1 FROM blobs WHERE id = ?1")?;
+            // By file hash too: SQLite reuses the rowid of a deleted blob.
+            let mut blob_exists = tx.prepare_cached("SELECT 1 FROM blobs WHERE id = ?1 AND file_hash = ?2")?;
             let mut insert = tx.prepare_cached(
-                "INSERT INTO paths (cache_id, hash, blob_id, store_path, narinfo, created_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6) ON CONFLICT (cache_id, hash) DO NOTHING",
+                "INSERT INTO paths (cache_id, hash, blob_id, store_path, narinfo, created_at, accessed_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6) ON CONFLICT (cache_id, hash) DO NOTHING",
             )?;
+            let mut link = tx.prepare_cached("INSERT OR IGNORE INTO blob_caches (blob_id, cache_id) VALUES (?1, ?2)")?;
             for r in &rendered {
                 // Re-checked under the writer lock: GC may have collected the blob.
-                if !blob_exists.exists([r.blob_id])? {
-                    return Err(rusqlite::Error::QueryReturnedNoRows);
+                if !blob_exists.exists(params![r.blob_id, &r.file_hash[..]])? {
+                    gone.push(r.store_path.clone());
+                    continue;
                 }
                 if insert.execute(params![r.key.cache, &r.key.hash[..], r.blob_id, r.store_path, r.narinfo, now])? > 0 {
                     keys.push(r.key);
                 }
+                link.execute(params![r.blob_id, r.key.cache])?;
             }
         }
+        if !gone.is_empty() {
+            // Nothing is committed; the client uploads those NARs again.
+            return Ok(Outcome::MissingNars(gone));
+        }
         tx.commit()?;
-        Ok(keys)
-    });
-    match keys {
-        Ok(keys) => Ok(Outcome::Published(keys)),
-        Err(rusqlite::Error::QueryReturnedNoRows) => Err(ApiError::new(StatusCode::CONFLICT, "blob was garbage collected; retry")),
-        Err(e) => Err(e.into()),
-    }
+        // Under the writer lock, so an eviction cannot run between the
+        // commit and the index update.
+        let mut index = st.index.wr();
+        st.narinfo_epoch.fetch_add(1, std::sync::atomic::Ordering::Release);
+        for key in &keys {
+            index.insert(*key);
+            st.narinfo.remove(key);
+        }
+        Ok(Outcome::Published(keys))
+    })
 }
 
 fn render(st: &Shared, p: &Prepared, b: &Blob) -> ApiResult<Rendered> {
     if b.nar_size != p.nar_size {
-        return Err(ApiError::bad_request(format!("{}: narSize {} does not match uploaded NAR ({})", p.store_path, p.nar_size, b.nar_size)));
+        return Err(ApiError::bad_request(format!("{}: narSize {} does not match the uploaded NAR", p.store_path, p.nar_size)));
     }
     let narinfo = helios_core::render_narinfo(
         &NarinfoInput {
@@ -482,5 +533,5 @@ fn render(st: &Shared, p: &Prepared, b: &Blob) -> ApiResult<Rendered> {
         st.signer.as_ref(),
     )
     .map_err(|e| ApiError::bad_request(format!("{}: {e}", p.store_path)))?;
-    Ok(Rendered { key: p.key, store_path: p.store_path.clone(), blob_id: b.id, narinfo })
+    Ok(Rendered { key: p.key, store_path: p.store_path.clone(), blob_id: b.id, file_hash: b.file_hash, narinfo })
 }

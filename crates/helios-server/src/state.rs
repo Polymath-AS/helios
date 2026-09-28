@@ -24,12 +24,28 @@ pub struct PathKey {
     pub hash: [u8; 20],
 }
 
+/// Per-process key for `PathKey` hashes. Store path hashes come from
+/// clients, so a fixed hash would let a pusher publish paths that all
+/// collide and slow every lookup to a crawl.
+static HASH_KEY: std::sync::LazyLock<[u64; 3]> = std::sync::LazyLock::new(|| {
+    let mut bytes = [0u8; 24];
+    helios_core::random_bytes(&mut bytes);
+    let word = |i: usize| u64::from_le_bytes(bytes[i * 8..i * 8 + 8].try_into().expect("8 bytes"));
+    [word(0), word(1), word(2)]
+});
+
+/// The 128-bit product folded to 64 bits, as in foldhash and wyhash.
+fn fold_mul(a: u64, b: u64) -> u64 {
+    let full = u128::from(a) * u128::from(b);
+    (full as u64) ^ ((full >> 64) as u64)
+}
+
 impl Hash for PathKey {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        // Store path hashes are uniformly distributed already.
-        let mut word = [0u8; 8];
-        word.copy_from_slice(&self.hash[..8]);
-        state.write_u64(u64::from_ne_bytes(word) ^ u64::from(self.cache));
+        let k = &*HASH_KEY;
+        let word = |i: usize| u64::from_le_bytes(self.hash[i..i + 8].try_into().expect("8 bytes"));
+        let tail = u64::from(u32::from_le_bytes(self.hash[16..20].try_into().expect("4 bytes"))) | (u64::from(self.cache) << 32);
+        state.write_u64(fold_mul(fold_mul(word(0) ^ k[0], word(8) ^ k[1]) ^ tail, k[2]));
     }
 }
 
@@ -77,6 +93,11 @@ pub struct AppState {
     pub access: crate::stats::Access,
     pub uploads: crate::chunked::Sessions,
     pub traces: RwLock<crate::traces::Traces>,
+    /// Bumped, under the index write lock, whenever paths are published or
+    /// forgotten. A narinfo read from the database is cached only if this
+    /// did not move meanwhile, so a body from before an eviction or re-push
+    /// is never cached after it.
+    pub narinfo_epoch: std::sync::atomic::AtomicU64,
 }
 
 pub type Shared = Arc<AppState>;
@@ -134,6 +155,7 @@ impl AppState {
             access: Default::default(),
             uploads: Default::default(),
             traces: RwLock::new(traces),
+            narinfo_epoch: Default::default(),
         })
     }
 
@@ -220,6 +242,8 @@ mod tests {
             upload_grace: std::time::Duration::from_secs(1),
             gc_interval: std::time::Duration::from_secs(3600),
             audit_retention: std::time::Duration::from_secs(3600),
+            compression_level: 3,
+            compression_window_log: 27,
         };
         let db = Db::open(&dir.join("helios.db")).unwrap();
         let (tx, _rx) = mpsc::unbounded_channel();

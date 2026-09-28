@@ -42,8 +42,14 @@ pub fn collect(st: &Shared) -> anyhow::Result<GcStats> {
     let mut stats = GcStats::default();
     let now = crate::db::now();
 
+    // Idle chunked uploads first: their files are then ordinary stale ones,
+    // and a live upload's file is skipped however old its mtime.
+    crate::chunked::expire(st);
     if let Ok(entries) = std::fs::read_dir(st.tmp_dir()) {
         for entry in entries.flatten() {
+            if crate::chunked::is_live(st, &entry.file_name().to_string_lossy()) {
+                continue;
+            }
             let stale = entry
                 .metadata()
                 .and_then(|m| m.modified())
@@ -85,7 +91,9 @@ pub fn collect_blobs(st: &Shared) -> anyhow::Result<(usize, u64)> {
             };
             {
                 let mut del = tx.prepare_cached("DELETE FROM blobs WHERE id = ?1")?;
+                let mut unlink = tx.prepare_cached("DELETE FROM blob_caches WHERE blob_id = ?1")?;
                 for (id, ..) in &victims {
+                    unlink.execute([id])?;
                     del.execute([id])?;
                 }
             }

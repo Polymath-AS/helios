@@ -33,8 +33,10 @@ impl FromRequestParts<Shared> for Audit {
     type Rejection = std::convert::Infallible;
 
     async fn from_request_parts(parts: &mut Parts, st: &Shared) -> Result<Self, Self::Rejection> {
+        // The proxy appends the peer it saw; everything left of that is
+        // whatever the client claimed, so only the last entry is trusted.
         let forwarded =
-            st.cfg.trust_proxy.then(|| parts.headers.get("x-forwarded-for")?.to_str().ok()?.split(',').next()?.trim().parse().ok()).flatten();
+            st.cfg.trust_proxy.then(|| parts.headers.get("x-forwarded-for")?.to_str().ok()?.rsplit(',').next()?.trim().parse().ok()).flatten();
         let peer = parts.extensions.get::<ConnectInfo<SocketAddr>>().map(|c| c.0.ip());
         Ok(Self { ip: forwarded.or(peer) })
     }

@@ -88,6 +88,16 @@ CREATE TABLE build_traces (
     PRIMARY KEY (cache_id, id)
 );
 "#,
+    // Caches each blob was uploaded to or published in: a cache may only
+    // reuse a blob it holds, or one any public cache serves.
+    r#"
+CREATE TABLE blob_caches (
+    blob_id INTEGER NOT NULL REFERENCES blobs (id),
+    cache_id INTEGER NOT NULL REFERENCES caches (id),
+    PRIMARY KEY (blob_id, cache_id)
+) WITHOUT ROWID;
+INSERT OR IGNORE INTO blob_caches (blob_id, cache_id) SELECT DISTINCT blob_id, cache_id FROM paths;
+"#,
 ];
 
 const PRAGMAS: &str = "

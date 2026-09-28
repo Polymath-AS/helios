@@ -73,6 +73,18 @@ pub struct Args {
     #[arg(long, env = "HELIOS_CACHES", value_delimiter = ',', value_parser = parse_declared_cache)]
     pub caches: Vec<DeclaredCache>,
 
+    /// zstd level clients compress with unless told otherwise (0 uploads
+    /// uncompressed). Level 3 with a 2^27 window gives NARs about 9% smaller
+    /// than plain level 2 while compressing faster than most uplinks.
+    #[arg(long, env = "HELIOS_COMPRESSION_LEVEL", default_value_t = 3, value_parser = clap::value_parser!(i32).range(0..=19))]
+    pub compression_level: i32,
+
+    /// zstd window for long-distance matching clients use unless told
+    /// otherwise, as a power of two (10-27), or 0 for the level's own.
+    /// 27 (128 MiB) is the largest a stock Nix decoder accepts.
+    #[arg(long, env = "HELIOS_COMPRESSION_WINDOW_LOG", default_value_t = 27, value_parser = parse_window_log)]
+    pub compression_window_log: i32,
+
     /// Print the public key for `trusted-public-keys` and exit.
     #[arg(long)]
     pub print_public_key: bool,
@@ -82,6 +94,13 @@ pub struct Args {
 pub struct DeclaredCache {
     pub name: String,
     pub public: bool,
+}
+
+fn parse_window_log(s: &str) -> Result<i32, String> {
+    match s.parse::<i32>() {
+        Ok(n) if n == 0 || (10..=27).contains(&n) => Ok(n),
+        _ => Err("expected 0, or 10-27".into()),
+    }
 }
 
 fn parse_declared_cache(s: &str) -> Result<DeclaredCache, String> {
@@ -122,6 +141,8 @@ pub struct Config {
     pub upload_grace: Duration,
     pub gc_interval: Duration,
     pub audit_retention: Duration,
+    pub compression_level: i32,
+    pub compression_window_log: i32,
 }
 
 pub fn read_secret(path: &Option<PathBuf>) -> anyhow::Result<Option<Vec<u8>>> {
@@ -145,6 +166,8 @@ impl Config {
             upload_grace: Duration::from_secs(args.upload_grace_seconds),
             gc_interval: Duration::from_secs(args.gc_interval_hours.max(1) * 3600),
             audit_retention: Duration::from_secs(args.audit_retention_days * 86400),
+            compression_level: args.compression_level,
+            compression_window_log: args.compression_window_log,
         })
     }
 }

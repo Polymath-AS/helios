@@ -16,10 +16,32 @@ use crate::state::Locked;
 use crate::state::{PathKey, Shared};
 
 const NIX_CACHE_INFO: &str = "StoreDir: /nix/store\nWantMassQuery: 1\nPriority: 40\n";
-const IMMUTABLE: HeaderValue = HeaderValue::from_static("public, max-age=31536000, immutable");
-const PRIVATE: HeaderValue = HeaderValue::from_static("private, max-age=3600");
-/// Most narinfo requests are misses (Nix asks every substituter about every
-/// path). Let proxies cache them briefly; new paths still appear quickly.
+/// Cache-Control for each kind of response.
+struct Caching {
+    /// NARs are named by their content, so they never change.
+    nar: HeaderValue,
+    /// narinfo and build traces can be evicted, quarantined or re-pushed.
+    metadata: HeaderValue,
+    /// Most narinfo requests are misses (Nix asks every substituter about
+    /// every path); new paths still appear quickly.
+    miss: HeaderValue,
+}
+
+const PUBLIC: Caching = Caching {
+    nar: HeaderValue::from_static("public, max-age=31536000, immutable"),
+    metadata: HeaderValue::from_static("public, max-age=3600"),
+    miss: HeaderValue::from_static("public, max-age=60"),
+};
+
+/// Nothing from a private cache may be kept by a shared proxy, and the
+/// client's own copy is revalidated.
+const PRIVATE: Caching = Caching {
+    nar: HeaderValue::from_static("private, no-cache"),
+    metadata: HeaderValue::from_static("private, no-cache"),
+    miss: HeaderValue::from_static("private, no-cache"),
+};
+
+/// Before the cache is known (unknown cache or URL).
 const NEGATIVE: HeaderValue = HeaderValue::from_static("public, max-age=60");
 
 enum Route<'a> {
@@ -73,30 +95,36 @@ async fn serve(st: Shared, method: Method, uri: Uri, headers: HeaderMap) -> ApiR
         return Ok(not_found(NEGATIVE));
     };
     st.authorize_read(&headers, name, cache)?;
-    let cache_control = if cache.public { IMMUTABLE } else { PRIVATE };
+    let caching = if cache.public { &PUBLIC } else { &PRIVATE };
 
     match route {
-        Route::CacheInfo => Ok(([(header::CONTENT_TYPE, "text/x-nix-cache-info")], NIX_CACHE_INFO).into_response()),
+        Route::CacheInfo => Ok((
+            [(header::CONTENT_TYPE, HeaderValue::from_static("text/x-nix-cache-info")), (header::CACHE_CONTROL, caching.metadata.clone())],
+            NIX_CACHE_INFO,
+        )
+            .into_response()),
         Route::BuildTrace(id) => Ok(match crate::traces::lookup(&st, cache.id, id) {
             Some(body) => {
-                ([(header::CONTENT_TYPE, HeaderValue::from_static("application/json")), (header::CACHE_CONTROL, cache_control)], body).into_response()
+                ([(header::CONTENT_TYPE, HeaderValue::from_static("application/json")), (header::CACHE_CONTROL, caching.metadata.clone())], body)
+                    .into_response()
             }
-            None => not_found(if cache.public { NEGATIVE } else { PRIVATE }),
+            None => not_found(caching.miss.clone()),
         }),
         Route::Narinfo(hash) => {
             let Some(hash) = helios_core::nix32_decode::<20>(hash) else {
-                return Ok(not_found(NEGATIVE));
+                return Ok(not_found(caching.miss.clone()));
             };
             let key = PathKey { cache: cache.id, hash };
             if !st.index.rd().contains(&key) {
                 st.counters.narinfo_misses.inc();
-                return Ok(not_found(if cache.public { NEGATIVE } else { PRIVATE }));
+                return Ok(not_found(caching.miss.clone()));
             }
             st.counters.narinfo_hits.inc();
             st.access.touch(key);
             let body = match st.narinfo.get(&key) {
                 Some(body) => body,
                 None => {
+                    let epoch = st.narinfo_epoch.load(std::sync::atomic::Ordering::Acquire);
                     let db = st.db.clone();
                     let loaded = tokio::task::spawn_blocking(move || {
                         db.read(|conn| {
@@ -107,20 +135,25 @@ async fn serve(st: Shared, method: Method, uri: Uri, headers: HeaderMap) -> ApiR
                     })
                     .await??;
                     let Some(text) = loaded else {
-                        return Ok(not_found(NEGATIVE));
+                        return Ok(not_found(caching.miss.clone()));
                     };
                     let body = Bytes::from(text);
-                    st.narinfo.insert(key, body.clone());
+                    // Checked under the index lock that publish and eviction
+                    // hold while they bump the epoch.
+                    let index = st.index.rd();
+                    if index.contains(&key) && st.narinfo_epoch.load(std::sync::atomic::Ordering::Acquire) == epoch {
+                        st.narinfo.insert(key, body.clone());
+                    }
                     body
                 }
             };
-            Ok(([(header::CONTENT_TYPE, HeaderValue::from_static("text/x-nix-narinfo")), (header::CACHE_CONTROL, cache_control)], body)
+            Ok(([(header::CONTENT_TYPE, HeaderValue::from_static("text/x-nix-narinfo")), (header::CACHE_CONTROL, caching.metadata.clone())], body)
                 .into_response())
         }
         Route::Nar(hash, compression) => {
             st.counters.nar_requests.inc();
             let Some(file_hash) = helios_core::nix32_decode::<32>(hash) else {
-                return Ok(not_found(NEGATIVE));
+                return Ok(not_found(caching.miss.clone()));
             };
             let db = st.db.clone();
             let cache_id = cache.id;
@@ -137,9 +170,9 @@ async fn serve(st: Shared, method: Method, uri: Uri, headers: HeaderMap) -> ApiR
             })
             .await??;
             let Some(size) = size else {
-                return Ok(not_found(NEGATIVE));
+                return Ok(not_found(caching.miss.clone()));
             };
-            nar_response(&st, &file_hash, compression, size, &method, cache_control).await
+            nar_response(&st, &file_hash, compression, size, &method, caching).await
         }
     }
 }
@@ -150,9 +183,9 @@ async fn nar_response(
     compression: Compression,
     size: u64,
     method: &Method,
-    cache_control: HeaderValue,
+    caching: &Caching,
 ) -> ApiResult<Response> {
-    let mut builder = Response::builder().header(header::CONTENT_TYPE, "application/x-nix-nar").header(header::CACHE_CONTROL, cache_control);
+    let mut builder = Response::builder().header(header::CONTENT_TYPE, "application/x-nix-nar").header(header::CACHE_CONTROL, caching.nar.clone());
 
     if let Some(prefix) = &st.cfg.accel_redirect {
         let name = helios_core::nix32_encode(file_hash);
@@ -167,7 +200,7 @@ async fn nar_response(
     }
     let file = match tokio::fs::File::open(st.nar_path(file_hash, compression)).await {
         Ok(f) => f,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(not_found(NEGATIVE)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(not_found(caching.miss.clone())),
         Err(e) => return Err(ApiError::internal(e)),
     };
     // 512 KiB reads; the stream ends after EOF or the first error.
@@ -192,7 +225,16 @@ pub async fn cache_info(
     headers: HeaderMap,
 ) -> ApiResult<axum::Json<serde_json::Value>> {
     let cache = st.cache(&name).ok_or_else(ApiError::not_found)?;
-    st.authorize_read(&headers, &name, cache)?;
+    // Pushers read it too, for the compression defaults; a push-only token
+    // learns nothing here it could not from pushing.
+    if st.authorize_read(&headers, &name, cache).is_err() {
+        st.authorize(&headers, &name, crate::auth::Perm::Push)?;
+    }
     let public_key = st.signer.as_ref().map(helios_core::Signer::public_key);
-    Ok(axum::Json(serde_json::json!({ "name": name, "public": cache.public, "publicKey": public_key })))
+    Ok(axum::Json(serde_json::json!({
+        "name": name,
+        "public": cache.public,
+        "publicKey": public_key,
+        "compression": { "level": st.cfg.compression_level, "windowLog": st.cfg.compression_window_log },
+    })))
 }

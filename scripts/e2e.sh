@@ -59,7 +59,8 @@ helios login admin "$URL" "$(cat "$WORK/admin")" >/dev/null
 helios cache create main >/dev/null
 helios cache create secret --private >/dev/null
 helios cache create chunked >/dev/null
-PUSH_TOKEN="$(helios token create ci --caches main,secret,chunked --perms push,pull 2>/dev/null | jq -r .token)"
+helios cache create plain >/dev/null
+PUSH_TOKEN="$(helios token create ci --caches main,secret,chunked,plain --perms push,pull 2>/dev/null | jq -r .token)"
 PULL_ONLY="$(helios token create reader --caches secret 2>/dev/null | jq -r .token)"
 PUSH_ONLY="$(helios token create builder --caches secret --perms push 2>/dev/null | jq -r .token)"
 check "tokens are read-only by default" '["pull"]' "$(helios token list | jq -c '.tokens[] | select(.subject=="reader") | .perms')"
@@ -76,6 +77,16 @@ check "chunks fit the chunk size" 0 "$(grep -c 'status=413' "$WORK/server.log")"
 NIX_CONFIG="trusted-public-keys = $PUBKEY
 require-sigs = true" nix copy --from "$URL/chunked" --to "$WORK/chunked-store" "$TARGET" 2>&1 | tail -3
 check "chunked closure substitutes" "$(nix-store -qR "$TARGET" | wc -l)" "$(nix-store --store "$WORK/chunked-store" -qR "$TARGET" | wc -l)"
+
+# Level 0: raw NARs, served as such. A fresh path, so no NAR is reused.
+head -c 100000 /dev/urandom >"$WORK/plain-file"
+PLAIN="$(nix-store --add "$WORK/plain-file")"
+helios push plain --level 0 "$PLAIN" 2>&1 | tail -1
+check "level 0 publishes uncompressed NARs" "none" "$(curl -s "$URL/plain/$(basename "$PLAIN" | cut -c1-32).narinfo" | sed -n 's/^Compression: //p')"
+NIX_CONFIG="trusted-public-keys = $PUBKEY
+require-sigs = true" nix copy --from "$URL/plain" --to "$WORK/plain-store" "$PLAIN" 2>&1 | tail -3
+check "an uncompressed NAR substitutes" "$(nix-store -q --hash "$PLAIN")" "$(nix-store --store "$WORK/plain-store" -q --hash "$PLAIN")"
+check "the server advertises compression defaults to pushers" '3 27' "$(curl -s -H "authorization: Bearer $PUSH_ONLY" "$URL/_api/v2/caches/secret" | jq -r '"\(.compression.level) \(.compression.windowLog)"')"
 
 AUTH=(-H "authorization: Bearer $PUSH_TOKEN")
 new_upload() { curl -s -X POST "${AUTH[@]}" "$URL/_api/v2/caches/chunked/uploads" | jq -r .id; }
@@ -157,6 +168,19 @@ check "pull-only token cannot pin" 403 "$(status -X POST -H "authorization: Bear
 check "invalid pin rejected" 400 "$(status -X POST "${AUTH[@]}" -H 'content-type: application/json' -d '{"storePaths":["/etc/passwd"]}' "$URL/_api/v2/caches/main/pins")"
 helios unpin main "$TARGET" 2>/dev/null
 check "unpinned closure is a candidate again" "$CLOSURE_SIZE" "$(lru_count 1)"
+
+echo "=== private NARs stay private"
+OTHER="$(helios --server admin token create other --caches main --perms push 2>/dev/null | jq -r .token)"
+head -c 4096 /dev/urandom >"$WORK/secret-file"
+nix-store --dump "$WORK/secret-file" | zstd -q >"$WORK/secret.nar.zst"
+SECRET_NAR="$(curl -s -X PUT -H "authorization: Bearer $PUSH_TOKEN" --data-binary @"$WORK/secret.nar.zst" "$URL/_api/v2/caches/secret/nar" | jq -r .narHash)"
+SECRET_SIZE="$(nix-store --dump "$WORK/secret-file" | wc -c)"
+FAKE_PATH="/nix/store/$(printf 'a%.0s' $(seq 32))-leak"
+LEAK="{\"paths\":[{\"storePath\":\"$FAKE_PATH\",\"narHash\":\"$SECRET_NAR\",\"narSize\":$SECRET_SIZE}]}"
+check "another cache does not see a private NAR as known" "[]" "$(curl -s -X POST -H "authorization: Bearer $OTHER" -H 'content-type: application/json' -d "{\"narHashes\":[\"$SECRET_NAR\"]}" "$URL/_api/v2/caches/main/nars/known" | jq -c .known)"
+check "nor can it publish a path over it" 409 "$(status -X POST -H "authorization: Bearer $OTHER" -H 'content-type: application/json' -d "$LEAK" "$URL/_api/v2/caches/main/paths")"
+curl -s -o /dev/null -X PUT -H "authorization: Bearer $OTHER" --data-binary @"$WORK/secret.nar.zst" "$URL/_api/v2/caches/main/nar"
+check "uploading the NAR itself entitles it" 201 "$(status -X POST -H "authorization: Bearer $OTHER" -H 'content-type: application/json' -d "$LEAK" "$URL/_api/v2/caches/main/paths")"
 
 echo "=== build traces"
 OUT_BASE="$(basename "$TARGET")"

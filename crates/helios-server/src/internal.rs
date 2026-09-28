@@ -143,6 +143,7 @@ struct EvictReq {
 
 fn forget(st: &Shared, keys: &[PathKey]) {
     let mut index = st.index.wr();
+    st.narinfo_epoch.fetch_add(1, std::sync::atomic::Ordering::Release);
     for k in keys {
         index.remove(k);
         st.narinfo.remove(k);
@@ -171,11 +172,12 @@ async fn evict(State(st): State<Shared>, Json(req): Json<EvictReq>) -> ApiResult
                 }
             }
             tx.commit()?;
+            // Under the writer lock, so a publish cannot interleave, and
+            // before the files go.
+            forget(&st, &keys);
             Ok(n)
         });
         let evicted = evicted.map_err(internal)?;
-        // Stop serving before the files go.
-        forget(&st, &keys);
         let (blobs, bytes) = crate::gc::collect_blobs(&st).map_err(internal)?;
         tracing::info!(paths = evicted, blobs, bytes, "evicted");
         Ok(Json(json!({ "evicted": evicted, "freedBlobs": blobs, "freedBytes": bytes })))
@@ -232,7 +234,7 @@ struct QuarantineReq {
 async fn quarantine(State(st): State<Shared>, Json(req): Json<QuarantineReq>) -> ApiResult<Json<Value>> {
     let file_hash = helios_core::nix32_decode::<32>(&req.file_hash).ok_or_else(|| ApiError::bad_request("invalid file hash"))?;
     blocking(move || {
-        let found = st.db.write(|conn| -> rusqlite::Result<Option<(Vec<PathKey>, String)>> {
+        let found = st.db.write(|conn| -> rusqlite::Result<Option<Vec<PathKey>>> {
             let tx = conn.transaction()?;
             let Some((id, compression)) = tx
                 .query_row("SELECT id, compression FROM blobs WHERE file_hash = ?1", [&file_hash[..]], |r| {
@@ -249,24 +251,27 @@ async fn quarantine(State(st): State<Shared>, Json(req): Json<QuarantineReq>) ->
                     .collect()
             };
             tx.execute("DELETE FROM paths WHERE blob_id = ?1", [id])?;
+            tx.execute("DELETE FROM blob_caches WHERE blob_id = ?1", [id])?;
             tx.execute("DELETE FROM blobs WHERE id = ?1", [id])?;
             tx.commit()?;
-            Ok(Some((keys, compression)))
+            forget(&st, &keys);
+            // Still under the writer lock: a re-upload of the same NAR must
+            // not have its good file moved aside by this.
+            if let Some(compression) = Compression::parse(&compression) {
+                let src = st.nar_path(&file_hash, compression);
+                let dir = st.cfg.data_dir.join("quarantine");
+                let moved = std::fs::create_dir_all(&dir).and_then(|()| std::fs::rename(&src, dir.join(src.file_name().unwrap_or_default())));
+                if let Err(e) = moved
+                    && e.kind() != std::io::ErrorKind::NotFound
+                {
+                    tracing::warn!(error = %e, "moving quarantined blob");
+                }
+            }
+            Ok(Some(keys))
         });
-        let Some((keys, compression)) = found.map_err(internal)? else {
+        let Some(keys) = found.map_err(internal)? else {
             return Err(ApiError::new(StatusCode::NOT_FOUND, "blob not found"));
         };
-        forget(&st, &keys);
-        if let Some(compression) = Compression::parse(&compression) {
-            let src = st.nar_path(&file_hash, compression);
-            let dir = st.cfg.data_dir.join("quarantine");
-            let moved = std::fs::create_dir_all(&dir).and_then(|()| std::fs::rename(&src, dir.join(src.file_name().unwrap_or_default())));
-            if let Err(e) = moved
-                && e.kind() != std::io::ErrorKind::NotFound
-            {
-                tracing::warn!(error = %e, "moving quarantined blob");
-            }
-        }
         tracing::warn!(blob = %req.file_hash, reason = %req.reason, unpublished = keys.len(), "quarantined blob");
         Ok(Json(json!({ "pathsRemoved": keys.len() })))
     })
@@ -314,9 +319,16 @@ async fn backup(State(st): State<Shared>, Json(req): Json<BackupReq>) -> ApiResu
     blocking(move || {
         let dir = st.cfg.data_dir.join("backups");
         std::fs::create_dir_all(&dir).map_err(internal)?;
-        let dest = dir.join(format!("helios-{}.db", crate::db::now()));
+        // Milliseconds: VACUUM INTO refuses an existing file. Names still sort
+        // by age, after older backups named in seconds.
+        let millis = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis());
+        let dest = dir.join(format!("helios-{millis}.db"));
         let dest_str = dest.to_str().ok_or_else(|| internal("backup path is not UTF-8"))?.to_owned();
-        st.db.read(|conn| conn.execute("VACUUM INTO ?1", [&dest_str])).map_err(internal)?;
+        if let Err(e) = st.db.read(|conn| conn.execute("VACUUM INTO ?1", [&dest_str])) {
+            // A partial file must not count towards --backup-keep.
+            let _ = std::fs::remove_file(&dest);
+            return Err(internal(e));
+        }
         let bytes = std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0);
 
         let mut existing: Vec<PathBuf> = std::fs::read_dir(&dir)

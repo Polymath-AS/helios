@@ -23,9 +23,11 @@ use crate::audit::Audit;
 use crate::auth::Perm;
 use crate::error::{ApiError, ApiResult};
 use crate::push::cache_for;
-use crate::state::{PathKey, Shared};
+use crate::state::{Locked, PathKey, Shared};
 
 const MAX_PINS_PER_REQUEST: usize = 1000;
+/// Each eviction walks every pinned closure under the writer lock.
+const MAX_PINS_PER_CACHE: i64 = 10_000;
 
 /// `/nix/store/<hash>-<name>` or its basename, as (hash, basename).
 fn parse_path(s: &str) -> Option<([u8; 20], &str)> {
@@ -105,11 +107,26 @@ pub async fn add(
         .iter()
         .map(|p| parse_path(p).map(|(h, base)| (h, base.to_owned())).ok_or_else(|| ApiError::bad_request(format!("invalid store path: {p}"))))
         .collect::<ApiResult<_>>()?;
+    // Only published paths: a pin stops at what the cache lacks, so pinning
+    // ahead of the push would protect less than it seems to.
+    let missing: Vec<String> = {
+        let index = st.index.rd();
+        parsed.iter().filter(|(hash, _)| !index.contains(&PathKey { cache: cache.id, hash: *hash })).map(|(_, b)| format!("/nix/store/{b}")).collect()
+    };
+    if !missing.is_empty() {
+        return Err(
+            ApiError::new(StatusCode::CONFLICT, "pin paths after pushing them; these are not in the cache").with(json!({ "missing": missing }))
+        );
+    }
     let actor = who.actor().to_owned();
     let st2 = st.clone();
     let added = tokio::task::spawn_blocking(move || {
-        st2.db.write(|conn| -> rusqlite::Result<usize> {
+        st2.db.write(|conn| -> ApiResult<usize> {
             let tx = conn.transaction()?;
+            let pinned: i64 = tx.query_row("SELECT count(*) FROM pins WHERE cache_id = ?1", [cache.id], |r| r.get(0))?;
+            if pinned + parsed.len() as i64 > MAX_PINS_PER_CACHE {
+                return Err(ApiError::bad_request(format!("a cache holds at most {MAX_PINS_PER_CACHE} pins; it has {pinned}")));
+            }
             let mut n = 0;
             {
                 let mut insert = tx.prepare_cached(

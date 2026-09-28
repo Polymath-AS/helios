@@ -13,13 +13,13 @@
 //!
 //! Chunks are verified as they arrive, as in a single-request upload.
 //! Sessions live in memory: after a server restart the client starts the
-//! NAR again. An idle session is dropped after an hour, and GC removes its
-//! file.
+//! NAR again. A session idle for an hour is dropped with its file; until
+//! then, GC leaves the file alone.
 
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::{Duration, Instant};
 
 use axum::Json;
 use axum::extract::{Path, State};
@@ -35,21 +35,36 @@ use crate::push::{UploadResp, cache_for, store_blob};
 use crate::state::Shared;
 
 const MAX_SESSIONS: usize = 1024;
-const IDLE_TIMEOUT: Duration = Duration::from_secs(3600);
+/// Per token, so one client cannot take every slot.
+const MAX_SESSIONS_PER_ACTOR: usize = 32;
+const IDLE_TIMEOUT_SECS: i64 = 3600;
+const FILE_PREFIX: &str = "upload-";
 
 pub struct Session {
     cache: Box<str>,
     actor: String,
     compression: Compression,
     tmp: PathBuf,
+    /// Bytes appended so far; read without waiting for a chunk in progress.
+    offset: AtomicU64,
+    /// Unix time of the last request.
+    touched: AtomicI64,
+    io: Mutex<Io>,
+}
+
+struct Io {
     file: std::fs::File,
     /// `None` once the stream is found invalid or the upload is finished.
     verifier: Option<Verifier>,
-    offset: u64,
-    touched: Instant,
 }
 
-pub type Sessions = Mutex<std::collections::HashMap<Box<str>, Arc<Mutex<Session>>>>;
+impl Session {
+    fn idle(&self, now: i64) -> bool {
+        now - self.touched.load(Ordering::Relaxed) > IDLE_TIMEOUT_SECS
+    }
+}
+
+pub type Sessions = Mutex<std::collections::HashMap<Box<str>, Arc<Session>>>;
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(PoisonError::into_inner)
@@ -63,21 +78,45 @@ fn not_found() -> ApiError {
     ApiError::new(StatusCode::NOT_FOUND, "upload not found; it expired or the server restarted, so start the NAR again")
 }
 
-/// The session `id`, if it belongs to `cache` and to whoever is asking.
-fn session(st: &Shared, cache: &str, id: &str, who: &Identity) -> ApiResult<Arc<Mutex<Session>>> {
-    let s = lock(&st.uploads).get(id).cloned().ok_or_else(not_found)?;
-    {
-        let g = lock(&s);
-        if &*g.cache != cache || g.actor != who.actor() {
-            return Err(not_found());
-        }
+/// Drops idle sessions and their files. Returns how many.
+pub fn expire(st: &Shared) -> usize {
+    let now = crate::db::now();
+    let expired: Vec<Arc<Session>> = {
+        let mut sessions = lock(&st.uploads);
+        let ids: Vec<Box<str>> = sessions.iter().filter(|(_, s)| s.idle(now)).map(|(id, _)| id.clone()).collect();
+        ids.iter().filter_map(|id| sessions.remove(id)).collect()
+    };
+    for s in &expired {
+        let _ = std::fs::remove_file(&s.tmp);
     }
+    expired.len()
+}
+
+/// Whether a file in the tmp directory belongs to a live upload, which GC
+/// must leave alone however old its mtime.
+pub fn is_live(st: &Shared, file_name: &str) -> bool {
+    file_name.strip_prefix(FILE_PREFIX).is_some_and(|id| lock(&st.uploads).contains_key(id))
+}
+
+/// The session `id`, if it belongs to `cache` and to whoever is asking and
+/// has not gone idle.
+fn session(st: &Shared, cache: &str, id: &str, who: &Identity) -> ApiResult<Arc<Session>> {
+    let s = lock(&st.uploads).get(id).cloned().ok_or_else(not_found)?;
+    if &*s.cache != cache || s.actor != who.actor() {
+        return Err(not_found());
+    }
+    let now = crate::db::now();
+    if s.idle(now) {
+        drop_session(st, id);
+        return Err(not_found());
+    }
+    s.touched.store(now, Ordering::Relaxed);
     Ok(s)
 }
 
 fn drop_session(st: &Shared, id: &str) {
     if let Some(s) = lock(&st.uploads).remove(id) {
-        let _ = std::fs::remove_file(&lock(&s).tmp);
+        let _ = std::fs::remove_file(&s.tmp);
     }
 }
 
@@ -91,35 +130,39 @@ pub async fn create(
     let who = st.authorize(&headers, &name, Perm::Push)?;
     let compression =
         Compression::parse(query(&uri, "compression").unwrap_or("zstd")).ok_or_else(|| ApiError::bad_request("compression must be zstd or none"))?;
+    expire(&st);
+    {
+        let sessions = lock(&st.uploads);
+        if sessions.len() >= MAX_SESSIONS {
+            return Err(ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "too many uploads in progress"));
+        }
+        if sessions.values().filter(|s| s.actor == who.actor()).count() >= MAX_SESSIONS_PER_ACTOR {
+            return Err(ApiError::new(
+                StatusCode::TOO_MANY_REQUESTS,
+                format!("at most {MAX_SESSIONS_PER_ACTOR} uploads in progress per token; complete or abandon one"),
+            ));
+        }
+    }
 
     let id = helios_core::uuid_v4();
-    let tmp = st.tmp_dir().join(format!("upload-{id}"));
-    let file = std::fs::File::create_new(&tmp).map_err(ApiError::internal)?;
+    let tmp = st.tmp_dir().join(format!("{FILE_PREFIX}{id}"));
     let verifier = Verifier::new(compression).map_err(ApiError::internal)?;
+    let file = tokio::task::spawn_blocking({
+        let tmp = tmp.clone();
+        move || std::fs::File::create_new(tmp)
+    })
+    .await?
+    .map_err(ApiError::internal)?;
     let new = Session {
         cache: name.into(),
         actor: who.actor().to_owned(),
         compression,
         tmp,
-        file,
-        verifier: Some(verifier),
-        offset: 0,
-        touched: Instant::now(),
+        offset: AtomicU64::new(0),
+        touched: AtomicI64::new(crate::db::now()),
+        io: Mutex::new(Io { file, verifier: Some(verifier) }),
     };
-
-    let mut sessions = lock(&st.uploads);
-    let expired: Vec<Box<str>> =
-        sessions.iter().filter(|(_, s)| s.try_lock().is_ok_and(|g| g.touched.elapsed() > IDLE_TIMEOUT)).map(|(id, _)| id.clone()).collect();
-    for old in expired {
-        if let Some(s) = sessions.remove(&old) {
-            let _ = std::fs::remove_file(&lock(&s).tmp);
-        }
-    }
-    if sessions.len() >= MAX_SESSIONS {
-        let _ = std::fs::remove_file(&new.tmp);
-        return Err(ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "too many uploads in progress"));
-    }
-    sessions.insert(id.as_str().into(), Arc::new(Mutex::new(new)));
+    lock(&st.uploads).insert(id.as_str().into(), Arc::new(new));
     Ok((StatusCode::CREATED, Json(json!({ "id": id, "offset": 0 }))))
 }
 
@@ -135,28 +178,29 @@ pub async fn append(
     let s = session(&st, &name, &id, &who)?;
     let max = st.cfg.max_upload_bytes;
     let result = tokio::task::spawn_blocking(move || -> ApiResult<u64> {
-        let mut g = lock(&s);
-        let g = &mut *g;
-        g.touched = Instant::now();
-        if at != g.offset {
-            return Err(ApiError::new(StatusCode::CONFLICT, "offset mismatch").with(json!({ "offset": g.offset })));
+        let mut io = lock(&s.io);
+        let io = &mut *io;
+        let offset = s.offset.load(Ordering::Acquire);
+        if at != offset {
+            return Err(ApiError::new(StatusCode::CONFLICT, "offset mismatch").with(json!({ "offset": offset })));
         }
-        if g.offset + body.len() as u64 > max {
+        if offset + body.len() as u64 > max {
             return Err(ApiError::new(StatusCode::PAYLOAD_TOO_LARGE, "upload too large"));
         }
-        let verifier = g.verifier.as_mut().ok_or_else(|| ApiError::bad_request("upload is no longer accepting data"))?;
+        let verifier = io.verifier.as_mut().ok_or_else(|| ApiError::new(StatusCode::CONFLICT, "upload is completing or was abandoned"))?;
         if let Err(e) = verifier.update(&body) {
-            g.verifier = None;
+            io.verifier = None;
             return Err(ApiError::bad_request(format!("invalid NAR stream: {e}")));
         }
         // A short write leaves the file ahead of the offset; later chunks
         // would then land in the wrong place, so give up on the upload.
-        if let Err(e) = g.file.write_all(&body) {
-            g.verifier = None;
+        if let Err(e) = io.file.write_all(&body) {
+            io.verifier = None;
             return Err(ApiError::internal(e));
         }
-        g.offset += body.len() as u64;
-        Ok(g.offset)
+        let offset = offset + body.len() as u64;
+        s.offset.store(offset, Ordering::Release);
+        Ok(offset)
     })
     .await?;
     match result {
@@ -173,8 +217,7 @@ pub async fn append(
 pub async fn status(State(st): State<Shared>, Path((name, id)): Path<(String, String)>, headers: HeaderMap) -> ApiResult<Json<serde_json::Value>> {
     let who = st.authorize(&headers, &name, Perm::Push)?;
     let s = session(&st, &name, &id, &who)?;
-    let offset = lock(&s).offset;
-    Ok(Json(json!({ "offset": offset })))
+    Ok(Json(json!({ "offset": s.offset.load(Ordering::Acquire) })))
 }
 
 pub async fn complete(
@@ -183,18 +226,19 @@ pub async fn complete(
     audit: Audit,
     headers: HeaderMap,
 ) -> ApiResult<(StatusCode, Json<UploadResp>)> {
+    let cache_id = cache_for(&st, &name)?.id;
     let who = st.authorize(&headers, &name, Perm::Push)?;
     let s = session(&st, &name, &id, &who)?;
     // Taken out of the map first, so a concurrent chunk cannot extend it.
     lock(&st.uploads).remove(id.as_str());
-    let (tmp, compression, digest) = tokio::task::spawn_blocking(move || {
-        let mut g = lock(&s);
-        let digest = match g.verifier.take() {
+    let (tmp, compression) = (s.tmp.clone(), s.compression);
+    let digest = tokio::task::spawn_blocking(move || {
+        let mut io = lock(&s.io);
+        match io.verifier.take() {
             Some(v) => v.finish().map_err(|e| ApiError::bad_request(format!("invalid NAR stream: {e}"))),
             None => Err(ApiError::bad_request("upload is no longer accepting data")),
         }
-        .and_then(|d| g.file.sync_data().map(|()| d).map_err(ApiError::internal));
-        (g.tmp.clone(), g.compression, digest)
+        .and_then(|d| io.file.sync_data().map(|()| d).map_err(ApiError::internal))
     })
     .await?;
     let digest = match digest {
@@ -205,7 +249,7 @@ pub async fn complete(
             return Err(err);
         }
     };
-    let resp = store_blob(&st, tmp, digest, compression).await?;
+    let resp = store_blob(&st, cache_id, tmp, digest, compression).await?;
     audit.log(
         &st,
         &who,
@@ -216,7 +260,6 @@ pub async fn complete(
     );
     Ok((StatusCode::CREATED, Json(resp)))
 }
-
 pub async fn abort(State(st): State<Shared>, Path((name, id)): Path<(String, String)>, headers: HeaderMap) -> ApiResult<StatusCode> {
     let who = st.authorize(&headers, &name, Perm::Push)?;
     session(&st, &name, &id, &who)?;
