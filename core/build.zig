@@ -23,7 +23,7 @@ pub fn build(b: *std.Build) void {
     }
 
     const lib = b.addLibrary(.{ .name = "helios", .linkage = .static, .root_module = mod });
-    lib.bundle_compiler_rt = true;
+    lib.bundle_compiler_rt = false;
     lib.installHeader(b.path("include/helios.h"), "helios.h");
     b.installArtifact(lib);
 }
