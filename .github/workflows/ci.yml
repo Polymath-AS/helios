@@ -1,0 +1,132 @@
+# Tests on x86_64 and aarch64, then publishes the OCI image to
+# ghcr.io/<owner>/helios on pushes to master and on v* tags.
+name: ci
+
+on:
+  push:
+    branches: [master]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            system: x86_64-linux
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            system: aarch64-linux
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+        with:
+          # Upstream Nix, as users of the module and image run.
+          determinate: false
+          extra-conf: |
+            system-features = nixos-test benchmark big-parallel kvm
+
+      - name: Format
+        run: nix develop -c cargo fmt --check
+      - name: Clippy
+        run: nix develop -c cargo clippy --release --all-targets -- -D warnings
+      - name: Rust tests
+        run: nix develop -c cargo test --release
+      - name: Zig tests
+        run: nix develop -c ./scripts/test-zig.sh
+      - name: End to end
+        run: nix develop -c sh -c 'cargo build --release && ./scripts/e2e.sh'
+
+      # The NixOS and Docker VM tests need KVM, which only the x86_64
+      # runners have.
+      - name: Enable KVM
+        if: matrix.system == 'x86_64-linux'
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Nix checks
+        if: matrix.system == 'x86_64-linux'
+        run: nix flake check -L
+      - name: Nix build
+        if: matrix.system != 'x86_64-linux'
+        run: nix build -L .#checks.${{ matrix.system }}.package .#docker
+
+  # Builds and pushes each architecture's image. Kept apart from the tests,
+  # which run pull request code, so only pushes ever hold a write token.
+  push:
+    if: github.event_name == 'push'
+    needs: test
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            arch: amd64
+          - runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+        with:
+          determinate: false
+
+      - name: Push image
+        env:
+          ARCH: ${{ matrix.arch }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version=$(nix eval --raw .#helios.version)
+          if [[ "$GITHUB_REF_TYPE" == tag && "$GITHUB_REF_NAME" != "v$version" ]]; then
+            echo "tag $GITHUB_REF_NAME does not match package version $version" >&2
+            exit 1
+          fi
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/helios"
+          nix run --inputs-from . nixpkgs#skopeo -- copy \
+            --dest-creds "$GITHUB_ACTOR:$TOKEN" \
+            "docker-archive:$(nix build --print-out-paths .#docker)" \
+            "docker://$image:sha-${GITHUB_SHA::12}-$ARCH"
+
+  # Joins the per-architecture images into one multi-arch tag.
+  image:
+    if: github.event_name == 'push'
+    needs: push
+    runs-on: ubuntu-24.04
+    permissions:
+      packages: write
+    steps:
+      - name: Publish manifest
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/helios"
+          sha="sha-${GITHUB_SHA::12}"
+          tags=(-t "$image:$sha")
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then
+            tags+=(-t "$image:${GITHUB_REF_NAME#v}" -t "$image:latest")
+          else
+            tags+=(-t "$image:$GITHUB_REF_NAME")
+          fi
+          docker buildx imagetools create "${tags[@]}" "$image:$sha-amd64" "$image:$sha-arm64"

@@ -1,5 +1,5 @@
 {
-  description = "Helios – Cloudflare-native Nix binary cache";
+  description = "Helios: self-hosted Nix binary cache (Rust server and CLI, Zig core)";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -7,88 +7,92 @@
 
   outputs = { self, nixpkgs }:
     let
-      systems = [ "x86_64-linux" "aarch64-linux" "x86_64-darwin" "aarch64-darwin" ];
+      # NAR serialisation is implemented for Linux only.
+      systems = [ "x86_64-linux" "aarch64-linux" ];
       forAllSystems = fn: nixpkgs.lib.genAttrs systems (system: fn nixpkgs.legacyPackages.${system});
 
-      pnpmDepsFor = pkgs: pkgs.fetchPnpmDeps {
+      helios' = pkgs: pkgs.rustPlatform.buildRustPackage {
         pname = "helios";
-        version = "0.0.0";
-        src = self;
-        hash = "sha256-FsWEGFPLmT7jU7QIv2FGqVHOdNMUqvqmnWmog2Wpfuw=";
-        fetcherVersion = 3;
+        version = "0.1.0";
+        # Only what the build reads, so docs and module edits do not rebuild it.
+        src = pkgs.lib.cleanSourceWith {
+          src = self;
+          filter = path: _type:
+            let
+              rel = pkgs.lib.removePrefix "${toString self}/" (toString path);
+              top = builtins.head (pkgs.lib.splitString "/" rel);
+              base = baseNameOf path;
+            in
+            builtins.elem top [ "Cargo.toml" "Cargo.lock" "core" "crates" "pkg" ]
+            && !(builtins.elem base [ "target" ".zig-cache" "zig-out" ]);
+        };
+        cargoLock.lockFile = ./Cargo.lock;
+
+        nativeBuildInputs = [ pkgs.zig pkgs.pkg-config ];
+        buildInputs = [ pkgs.zstd pkgs.sqlite ];
+
+        # Nix builds must not depend on the build machine's CPU. `baseline`
+        # loses SHA-NI accelerated hashing; for a dedicated host, build with
+        # HELIOS_ZIG_CPU=native (or e.g. x86_64_v3+sha) instead.
+        HELIOS_ZIG_CPU = "baseline";
+        # zig is a build tool of helios-core's build.rs, not the package builder.
+        dontUseZigBuild = true;
+        dontUseZigCheck = true;
+        dontUseZigInstall = true;
+
+        meta = {
+          description = "Self-hosted Nix binary cache";
+          mainProgram = "helios";
+        };
       };
     in
     {
-      packages = forAllSystems (pkgs: {
-        default = pkgs.stdenv.mkDerivation {
-          pname = "helios";
-          version = "0.0.0";
-          src = self;
-
-          nativeBuildInputs = [
-            pkgs.nodejs_22
-            pkgs.pnpm
-            pkgs.pnpmConfigHook
-            pkgs.makeWrapper
-          ];
-
-          pnpmDeps = pnpmDepsFor pkgs;
-
-          buildPhase = ''
-            pnpm --filter @helios/cli exec tsc
-          '';
-
-          installPhase = ''
-            mkdir -p $out/lib/helios $out/bin
-
-            # Copy the full workspace structure so pnpm symlinks resolve
-            cp -r apps $out/lib/helios/apps
-            cp -r packages $out/lib/helios/packages
-            cp -r workers $out/lib/helios/workers
-            cp -r node_modules $out/lib/helios/node_modules
-            cp package.json $out/lib/helios/package.json
-
-            makeWrapper ${pkgs.nodejs_22}/bin/node $out/bin/helios \
-              --add-flags "$out/lib/helios/apps/cli/dist/main.js" \
-              --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.nix pkgs.zstd ]}
-          '';
-        };
+      packages = forAllSystems (pkgs: rec {
+        helios = helios' pkgs;
+        default = helios;
+        # OCI image with the server and maintenance daemon; see nix/docker.nix.
+        docker = import ./nix/docker.nix { inherit pkgs helios; };
       });
+
+      overlays.default = final: _prev: { helios = helios' final; };
+
+      # services.helios; the package defaults to this flake's build.
+      nixosModules.default =
+        { lib, pkgs, ... }:
+        {
+          imports = [ ./nix/module.nix ];
+          services.helios.package = lib.mkDefault (helios' pkgs);
+        };
+      nixosModules.helios = self.nixosModules.default;
 
       devShells = forAllSystems (pkgs: {
         default = pkgs.mkShell {
           packages = [
-            pkgs.nodejs_22
-            pkgs.pnpm
-            pkgs.wrangler
+            pkgs.zig
+            pkgs.cargo
+            pkgs.rustc
+            pkgs.clippy
+            pkgs.rustfmt
+            pkgs.pkg-config
+            pkgs.zstd
+            pkgs.sqlite
+            pkgs.jq
+            pkgs.curl
           ];
         };
       });
 
       checks = forAllSystems (pkgs: {
-        default = pkgs.stdenv.mkDerivation {
-          name = "helios-check";
-          src = self;
-
-          nativeBuildInputs = [
-            pkgs.nodejs_22
-            pkgs.pnpm
-            pkgs.pnpmConfigHook
-          ];
-
-          pnpmDeps = pnpmDepsFor pkgs;
-
-          buildPhase = ''
-            # Domain package: full check (tsc + unit tests)
-            pnpm --filter @helios/cache-domain check
-
-            # Worker: type-check only (integration tests need workerd runtime)
-            pnpm --filter @helios/cache-worker exec tsc --noEmit
-          '';
-
-          installPhase = ''
-            touch $out
-          '';
+        package = self.packages.${pkgs.stdenv.hostPlatform.system}.helios;
+        nixos = import ./nix/test.nix {
+          inherit pkgs;
+          module = ./nix/module.nix;
+          helios = self.packages.${pkgs.stdenv.hostPlatform.system}.helios;
+        };
+        docker = import ./nix/docker-test.nix {
+          inherit pkgs;
+          image = self.packages.${pkgs.stdenv.hostPlatform.system}.docker;
+          helios = self.packages.${pkgs.stdenv.hostPlatform.system}.helios;
         };
       });
     };

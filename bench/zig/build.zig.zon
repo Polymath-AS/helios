@@ -1,0 +1,15 @@
+.{
+    .name = .helios_bench,
+    .version = "0.1.0",
+    .fingerprint = 0xc67ae359dd92ff1e,
+    .minimum_zig_version = "0.16.0",
+    .dependencies = .{
+        .nix_base32 = .{ .path = "../../pkg/nix-base32" },
+        .nix_store_path = .{ .path = "../../pkg/nix-store-path" },
+        .nix_narinfo = .{ .path = "../../pkg/nix-narinfo" },
+        .nix_derivation = .{ .path = "../../pkg/nix-derivation" },
+        .nix_archive = .{ .path = "../../pkg/nix-archive" },
+        .nix_flake_lock = .{ .path = "../../pkg/nix-flake-lock" },
+    },
+    .paths = .{ "build.zig", "build.zig.zon", "src" },
+}

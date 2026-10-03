@@ -1,0 +1,14 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license-file = "LICENSE"
+publish = false
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "abort"
