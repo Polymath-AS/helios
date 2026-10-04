@@ -26,7 +26,6 @@ pub struct PathSpec {
 #[derive(Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct Uploaded {
-    pub file_hash: String,
     pub file_size: u64,
     pub nar_hash: String,
     pub nar_size: u64,

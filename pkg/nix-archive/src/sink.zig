@@ -32,6 +32,9 @@ pub const Options = struct {
     /// window of 2^window_log bytes (at most 27, the largest a stock Nix
     /// decoder accepts), which finds repeats across a large NAR.
     window_log: c_int = 0,
+    /// false skips both SHA-256 passes; the digest then carries sizes only.
+    /// For an uploader whose server verifies the content anyway.
+    hash: bool = true,
 };
 
 const in_capacity = 1 << 20;
@@ -44,6 +47,7 @@ pub const direct_threshold = in_capacity;
 const multithread_threshold = 4 << 20;
 
 pub const Sink = struct {
+    hash: bool = true,
     nar_hasher: Sha256 = .init(.{}),
     nar_size: u64 = 0,
     file_hasher: Sha256 = .init(.{}),
@@ -83,6 +87,7 @@ pub const Sink = struct {
         const out_buf = try allocator.alloc(u8, out_len);
 
         return .{
+            .hash = options.hash,
             .cctx = cctx,
             .in_buf = in_buf,
             .out_buf = out_buf,
@@ -132,7 +137,7 @@ pub const Sink = struct {
     }
 
     fn feed(self: *Sink, data: []const u8) Error!void {
-        self.nar_hasher.update(data);
+        if (self.hash) self.nar_hasher.update(data);
         self.nar_size += data.len;
         const cctx = self.cctx orelse return self.emit(data);
         var input: zstd.InBuffer = .{ .src = data.ptr, .size = data.len, .pos = 0 };
@@ -145,7 +150,7 @@ pub const Sink = struct {
 
     fn emit(self: *Sink, data: []const u8) Error!void {
         // Uncompressed output is the NAR itself: hash it once, not twice.
-        if (self.cctx != null) self.file_hasher.update(data);
+        if (self.hash and self.cctx != null) self.file_hasher.update(data);
         self.file_size += data.len;
         if (self.write_fn(self.write_ctx, data.ptr, data.len) != 0) return error.Aborted;
     }
@@ -163,9 +168,14 @@ pub const Sink = struct {
             }
         }
         var digest: Digest = undefined;
-        self.nar_hasher.final(&digest.nar_hash);
-        if (self.cctx != null) self.file_hasher.final(&digest.file_hash) else {
-            digest.file_hash = digest.nar_hash;
+        if (!self.hash) {
+            @memset(&digest.nar_hash, 0);
+            @memset(&digest.file_hash, 0);
+        } else {
+            self.nar_hasher.final(&digest.nar_hash);
+            if (self.cctx != null) self.file_hasher.final(&digest.file_hash) else {
+                digest.file_hash = digest.nar_hash;
+            }
         }
         digest.nar_size = self.nar_size;
         digest.file_size = self.file_size;

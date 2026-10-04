@@ -48,6 +48,7 @@ typedef struct {
     int threads;        /* zstd worker threads; 0 = calling thread */
     uint64_t nar_size;  /* exact NAR size, pledged to zstd; 0 if unknown */
     int window_log;     /* 0: the level's window; 10-27: long-distance matching */
+    bool hash;          /* false skips SHA-256; the digest then has sizes only */
 } hl_dump_options;
 
 /* Return non-zero to abort the pipeline with HL_E_ABORTED. */

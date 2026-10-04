@@ -1,6 +1,7 @@
-//! `helios push`: NARs are serialised, compressed and hashed by libhelios
-//! and streamed straight into the upload request, with no temp files and no
-//! `nix store dump-path | zstd` subprocesses.
+//! `helios push`: NARs are serialised and compressed by libhelios and
+//! streamed straight into the upload request, with no temp files and no
+//! `nix store dump-path | zstd` subprocesses. The server hashes what it
+//! receives, so the client does not hash again.
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -59,7 +60,7 @@ fn produce(path: &str, opts: DumpOptions, tx: mpsc::Sender<Result<Bytes, std::io
         Err(e) if e.code == HL_E_UNSUPPORTED_OS => {}
         other => return other.with_context(|| format!("serialising {path}")),
     }
-    // Non-Linux: let Nix serialise, libhelios compresses and hashes.
+    // Non-Linux: let Nix serialise, libhelios compresses.
     use std::io::Read;
     let mut child = std::process::Command::new("nix-store")
         .args(["--dump", path])
@@ -155,11 +156,14 @@ async fn upload_one(client: &Client, cache: &str, info: &PathInfo, opts: DumpOpt
         (uploaded, Ok(digest)) => (uploaded?, digest),
     };
 
-    let ours = format!("sha256:{}", helios_core::nix32_encode(&digest.nar_hash));
-    if parse_sha256(&info.nar_hash) != Some(digest.nar_hash) {
-        bail!("{}: NAR hash {ours} differs from the Nix database ({})", info.path, info.nar_hash);
+    // The NAR is not hashed here: the server hashes what it received, and
+    // that is checked against the Nix database, which still catches a
+    // corrupt local store (the NAR is then never published).
+    let verified = parse_sha256(&uploaded.nar_hash);
+    if verified.is_none() || verified != parse_sha256(&info.nar_hash) {
+        bail!("{}: NAR hash {} differs from the Nix database ({})", info.path, uploaded.nar_hash, info.nar_hash);
     }
-    if uploaded.nar_hash != ours || uploaded.file_hash != helios_core::nix32_encode(&digest.file_hash) || uploaded.nar_size != digest.nar_size {
+    if uploaded.nar_size != digest.nar_size || uploaded.file_size != digest.file_size {
         bail!("{}: server verified different content than was sent", info.path);
     }
     Ok(uploaded.file_size)
@@ -173,7 +177,7 @@ async fn upload_all(client: &Client, cache: &str, paths: &[&PathInfo], opts: &Op
     let mut bytes = 0u64;
     let mut failures = HashSet::new();
     let mut results = futures_util::stream::iter(paths.iter().map(|info| async move {
-        let dump = DumpOptions { level: opts.level, threads, nar_size: info.nar_size, window_log: opts.window_log };
+        let dump = DumpOptions { level: opts.level, threads, nar_size: info.nar_size, window_log: opts.window_log, hash: false };
         let started = Instant::now();
         (info, upload_one(client, cache, info, dump, opts.chunk_size).await, started.elapsed())
     }))

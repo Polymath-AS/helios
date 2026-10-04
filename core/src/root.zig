@@ -85,10 +85,11 @@ pub const DumpOptions = extern struct {
     threads: c_int,
     nar_size: u64,
     window_log: c_int,
+    hash: bool,
 };
 
 fn sinkOptions(opts: *const DumpOptions) archive.Options {
-    return .{ .level = opts.level, .threads = opts.threads, .nar_size = opts.nar_size, .window_log = opts.window_log };
+    return .{ .level = opts.level, .threads = opts.threads, .nar_size = opts.nar_size, .window_log = opts.window_log, .hash = opts.hash };
 }
 
 export fn hl_nar_dump(path: [*:0]const u8, opts: *const DumpOptions, write: WriteFn, ctx: ?*anyopaque, out: *Digest) c_int {

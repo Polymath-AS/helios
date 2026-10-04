@@ -24,6 +24,7 @@ mod sys {
         pub threads: c_int,
         pub nar_size: u64,
         pub window_log: c_int,
+        pub hash: bool,
     }
 
     #[repr(C)]
@@ -164,17 +165,20 @@ pub struct DumpOptions {
     /// 0 keeps the level's window; 10-27 enables long-distance matching
     /// with a 2^window_log window.
     pub window_log: i32,
+    /// false skips both SHA-256 passes; the digest then carries sizes only,
+    /// for an uploader whose server verifies the content anyway.
+    pub hash: bool,
 }
 
 impl Default for DumpOptions {
     fn default() -> Self {
-        Self { level: 3, threads: 0, nar_size: 0, window_log: 0 }
+        Self { level: 3, threads: 0, nar_size: 0, window_log: 0, hash: true }
     }
 }
 
 impl DumpOptions {
     fn raw(&self) -> sys::DumpOptions {
-        sys::DumpOptions { level: self.level, threads: self.threads, nar_size: self.nar_size, window_log: self.window_log }
+        sys::DumpOptions { level: self.level, threads: self.threads, nar_size: self.nar_size, window_log: self.window_log, hash: self.hash }
     }
 }
 
