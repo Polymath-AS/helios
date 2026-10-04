@@ -100,7 +100,7 @@ pub const LockFile = struct {
     nodes: []const Node,
 
     pub fn resolve(self: *const LockFile, gpa: Allocator, path: Path) ValidationError!?u32 {
-        var r: Resolver = .init(gpa, self);
+        var r: Resolver = try .init(gpa, self);
         defer r.deinit();
         return r.resolve(path, false);
     }
@@ -122,7 +122,7 @@ pub const LockFile = struct {
         var fallback: std.heap.BufferFirstAllocator = .init(&first, gpa);
         var bump = try Bump.init(fallback.allocator(), 2 * 1024);
         defer bump.deinit();
-        var r: Resolver = .init(bump.allocator(), self);
+        var r: Resolver = try .init(bump.allocator(), self);
         const visited = try bump.alloc(bool, self.nodes.len);
         @memset(visited, false);
         visited[root_id] = true;
@@ -835,64 +835,86 @@ fn build(p: *Parser, version: u8, root_key: []const u8, wire: []WireNode) ParseE
 
 // ── follows resolution ──
 
-const EdgeKey = struct { node: u32, input: u32 };
-
 const Resolver = struct {
     gpa: Allocator,
     lock: *const LockFile,
-    /// Resolved follows targets, keyed by the path slice's address.
-    cache: std.AutoHashMapUnmanaged(usize, ?u32) = .empty,
-    active: std.AutoHashMapUnmanaged(EdgeKey, void) = .empty,
+    /// Input `i` of node `n` is edge `first_input[n] + i`, so the per-edge
+    /// state below is plain arrays: no hashing on the resolve path.
+    first_input: []u32,
+    /// Edges on the chain being resolved, for cycle detection.
+    active: []bool,
+    /// Resolved follows target per edge, or `unknown`.
+    cache: []u32,
+    steps: std.ArrayList(Step) = .empty,
 
-    const Step = union(enum) { component: []const u8, finish: struct { edge: EdgeKey, target: usize } };
+    const unknown = std.math.maxInt(u32);
 
-    fn init(gpa: Allocator, lock: *const LockFile) Resolver {
-        return .{ .gpa = gpa, .lock = lock };
+    const Step = union(enum) { component: []const u8, finish: u32 };
+
+    fn init(gpa: Allocator, lock: *const LockFile) Allocator.Error!Resolver {
+        const first_input = try gpa.alloc(u32, lock.nodes.len);
+        errdefer gpa.free(first_input);
+        var edges: u32 = 0;
+        for (lock.nodes, first_input) |n, *first| {
+            first.* = edges;
+            edges += @intCast(n.inputs.len);
+        }
+        const active = try gpa.alloc(bool, edges);
+        errdefer gpa.free(active);
+        @memset(active, false);
+        const cache = try gpa.alloc(u32, edges);
+        @memset(cache, unknown);
+        return .{ .gpa = gpa, .lock = lock, .first_input = first_input, .active = active, .cache = cache };
     }
 
     fn deinit(r: *Resolver) void {
-        r.cache.deinit(r.gpa);
-        r.active.deinit(r.gpa);
+        r.gpa.free(r.first_input);
+        r.gpa.free(r.active);
+        r.gpa.free(r.cache);
+        r.steps.deinit(r.gpa);
     }
 
     fn resolve(r: *Resolver, path: Path, use_cache: bool) ValidationError!?u32 {
-        var steps: std.ArrayList(Step) = .empty;
-        defer steps.deinit(r.gpa);
+        r.steps.clearRetainingCapacity();
+        // Every active edge has its finish step still on the stack; an early
+        // return clears them so the next call starts clean.
+        defer for (r.steps.items) |step| switch (step) {
+            .finish => |e| r.active[e] = false,
+            .component => {},
+        };
         var i = path.len;
         while (i > 0) {
             i -= 1;
-            try steps.append(r.gpa, .{ .component = path[i] });
+            try r.steps.append(r.gpa, .{ .component = path[i] });
         }
         var current: u32 = root_id;
-        r.active.clearRetainingCapacity();
-        while (steps.pop()) |step| switch (step) {
+        while (r.steps.pop()) |step| switch (step) {
             .component => |name| {
                 const node = &r.lock.nodes[current];
                 const idx = findSorted(Input, node.inputs, name) orelse return null;
                 switch (node.inputs[idx].edge) {
                     .node => |child| current = child,
                     .follows => |target| {
-                        const addr = @intFromPtr(target.ptr);
-                        if (use_cache) if (r.cache.get(addr)) |cached| {
-                            current = cached orelse return null;
+                        const edge = r.first_input[current] + @as(u32, @intCast(idx));
+                        if (use_cache and r.cache[edge] != unknown) {
+                            current = r.cache[edge];
                             continue;
-                        };
-                        const edge: EdgeKey = .{ .node = current, .input = @intCast(idx) };
-                        const gop = try r.active.getOrPut(r.gpa, edge);
-                        if (gop.found_existing) return error.FollowsCycle;
-                        try steps.append(r.gpa, .{ .finish = .{ .edge = edge, .target = addr } });
+                        }
+                        if (r.active[edge]) return error.FollowsCycle;
+                        r.active[edge] = true;
+                        try r.steps.append(r.gpa, .{ .finish = edge });
                         var j = target.len;
                         while (j > 0) {
                             j -= 1;
-                            try steps.append(r.gpa, .{ .component = target[j] });
+                            try r.steps.append(r.gpa, .{ .component = target[j] });
                         }
                         current = root_id;
                     },
                 }
             },
-            .finish => |f| {
-                _ = r.active.remove(f.edge);
-                if (use_cache) try r.cache.put(r.gpa, f.target, current);
+            .finish => |edge| {
+                r.active[edge] = false;
+                if (use_cache) r.cache[edge] = current;
             },
         };
         return current;

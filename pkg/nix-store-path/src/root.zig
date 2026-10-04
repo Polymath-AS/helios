@@ -39,7 +39,9 @@ fn isNameChar(c: u8) bool {
     };
 }
 
-pub fn isValidName(name: []const u8) bool {
+// Out of line: Zig 0.17 inlines this vector loop into callers such as
+// baseName, which made store path parsing about 7% slower than a call.
+pub noinline fn isValidName(name: []const u8) bool {
     if (name.len == 0 or name.len > max_name_len or name[0] == '.') return false;
     var i: usize = 0;
     while (i + lanes <= name.len) : (i += lanes) {

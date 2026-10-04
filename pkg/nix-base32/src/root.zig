@@ -110,8 +110,15 @@ fn pack(out: []u8, d: []const u8) DecodeError!void {
     const len = d.len;
     var k: usize = 0;
     while (8 * k + 8 <= len and 5 * k + 5 <= out.len) : (k += 1) {
-        var v: u40 = 0;
-        inline for (0..8) |i| v |= @as(u40, d[len - 1 - (8 * k + i)]) << (5 * i);
+        // One load puts digit 8k+i in byte i (big-endian, as the digits run
+        // most significant first). Three mask-and-shift steps then close
+        // the 3-bit gaps between them: pairs into 10 bits, pairs of those
+        // into 20, then the two halves into 40. Unlike shifting each digit
+        // in, this does not depend on how the backend extracts bytes.
+        const word = std.mem.readInt(u64, d[len - 8 - 8 * k ..][0..8], .big);
+        const pairs = (word & 0x001F001F001F001F) | ((word & 0x1F001F001F001F00) >> 3);
+        const quads = (pairs & 0x000003FF000003FF) | ((pairs & 0x03FF000003FF0000) >> 6);
+        const v: u40 = @truncate((quads & 0xFFFFF) | ((quads >> 32) << 20));
         std.mem.writeInt(u40, out[5 * k ..][0..5], v, .little);
     }
     @memset(out[5 * k ..], 0);
