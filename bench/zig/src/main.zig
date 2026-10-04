@@ -120,7 +120,7 @@ fn decode32(c: *const Ctx) !void {
     for (c.hashes32) |h| {
         var out: [20]u8 = undefined;
         try base32.decode(&out, h);
-        std.mem.doNotOptimizeAway(out);
+        std.mem.doNotOptimizeAway(&out);
     }
 }
 
@@ -128,7 +128,7 @@ fn decode32Scalar(c: *const Ctx) !void {
     for (c.hashes32) |h| {
         var out: [20]u8 = undefined;
         try base32.decodeScalar(&out, h);
-        std.mem.doNotOptimizeAway(out);
+        std.mem.doNotOptimizeAway(&out);
     }
 }
 
@@ -136,7 +136,7 @@ fn decode52(c: *const Ctx) !void {
     for (c.hashes52) |h| {
         var out: [32]u8 = undefined;
         try base32.decode(&out, h);
-        std.mem.doNotOptimizeAway(out);
+        std.mem.doNotOptimizeAway(&out);
     }
 }
 
@@ -144,14 +144,17 @@ fn encode20(c: *const Ctx) !void {
     for (c.raw20) |*r| {
         var out: [32]u8 = undefined;
         base32.encode(&out, r);
-        std.mem.doNotOptimizeAway(out);
+        std.mem.doNotOptimizeAway(&out);
     }
 }
 
 fn storePathParse(c: *const Ctx) !void {
     for (c.paths) |p| {
         const base = store_path.baseName(p) orelse return error.Invalid;
-        std.mem.doNotOptimizeAway(store_path.hashOf(base));
+        {
+            const h = store_path.hashOf(base);
+            std.mem.doNotOptimizeAway(&h);
+        }
     }
 }
 
@@ -165,7 +168,7 @@ fn encode20Scalar(c: *const Ctx) !void {
     for (c.raw20) |*r| {
         var out: [32]u8 = undefined;
         base32.encodeScalar(&out, r);
-        std.mem.doNotOptimizeAway(out);
+        std.mem.doNotOptimizeAway(&out);
     }
 }
 
