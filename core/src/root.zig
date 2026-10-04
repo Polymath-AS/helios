@@ -259,7 +259,7 @@ export fn hl_hmac_sha256(key: [*]const u8, key_len: usize, msg: [*]const u8, msg
 
 /// Fills `buf` from the OS CSPRNG.
 export fn hl_random(buf: [*]u8, len: usize) c_int {
-    if (builtin.os.tag == .linux) {
+    if (builtin.target.os.tag == .linux) {
         const linux = std.os.linux;
         var off: usize = 0;
         while (off < len) {

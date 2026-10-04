@@ -42,7 +42,7 @@ const V = @Vector(lanes, u8);
 const Mask = @Int(.unsigned, lanes);
 
 /// Index of the first '"' or '\\' at or after `start`.
-pub fn indexOfQuoteOrEscape(s: []const u8, start: usize) ?usize {
+pub fn findQuoteOrEscape(s: []const u8, start: usize) ?usize {
     var i = start;
     const quote: V = @splat('"');
     const backslash: V = @splat('\\');
@@ -73,7 +73,7 @@ const Parser = struct {
     fn string(p: *Parser) Error![]const u8 {
         try p.expect("\"");
         const start = p.pos;
-        var i = indexOfQuoteOrEscape(p.s, start) orelse return error.Syntax;
+        var i = findQuoteOrEscape(p.s, start) orelse return error.Syntax;
         if (p.s[i] == '"') {
             p.pos = i + 1;
             return p.s[start..i];
@@ -94,7 +94,7 @@ const Parser = struct {
                 't' => '\t',
                 else => |c| c,
             });
-            const next = indexOfQuoteOrEscape(p.s, i + 2) orelse return error.Syntax;
+            const next = findQuoteOrEscape(p.s, i + 2) orelse return error.Syntax;
             try out.appendSlice(p.arena, p.s[i + 2 .. next]);
             i = next;
         }
@@ -201,7 +201,7 @@ test "vector quote search matches scalar" {
     for (0..buf.len) |i| {
         for ([_]u8{ '"', '\\' }) |c| {
             buf[i] = c;
-            for (0..i + 1) |start| try std.testing.expectEqual(@as(?usize, i), indexOfQuoteOrEscape(&buf, start));
+            for (0..i + 1) |start| try std.testing.expectEqual(@as(?usize, i), findQuoteOrEscape(&buf, start));
             buf[i] = 'x';
         }
     }

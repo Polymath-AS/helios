@@ -393,7 +393,13 @@ const Parser = struct {
                 else => {
                     const len = std.unicode.utf8ByteSequenceLength(c) catch return p.fail(error.InvalidUtf8, i);
                     if (i + len > p.s.len) return p.fail(error.InvalidUtf8, i);
-                    _ = std.unicode.utf8Decode(p.s[i..][0..len]) catch return p.fail(error.InvalidUtf8, i);
+                    const seq = p.s[i..];
+                    _ = switch (len) {
+                        2 => std.unicode.utf8Decode2(seq[0..2].*),
+                        3 => std.unicode.utf8Decode3(seq[0..3].*),
+                        4 => std.unicode.utf8Decode4(seq[0..4].*),
+                        else => return p.fail(error.InvalidUtf8, i),
+                    } catch return p.fail(error.InvalidUtf8, i);
                     p.pos = i + len;
                 },
             }
@@ -1285,10 +1291,10 @@ test "version 5 info overlay, duplicate keys and renaming" {
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(testing.allocator);
     try doc.lock.writeNix(testing.allocator, &out);
-    try testing.expect(std.mem.indexOf(u8, out.items, "\"lastModified\": 7,") != null);
-    try testing.expect(std.mem.indexOf(u8, out.items, "\"a_2\": {") != null);
-    try testing.expect(std.mem.indexOf(u8, out.items, "\"k\": \"new\"") != null);
-    try testing.expect(std.mem.indexOf(u8, out.items, "\"flake\": false,") != null);
+    try testing.expect(std.mem.find(u8, out.items, "\"lastModified\": 7,") != null);
+    try testing.expect(std.mem.find(u8, out.items, "\"a_2\": {") != null);
+    try testing.expect(std.mem.find(u8, out.items, "\"k\": \"new\"") != null);
+    try testing.expect(std.mem.find(u8, out.items, "\"flake\": false,") != null);
     // Re-parsing canonical output is a fixed point.
     var doc2 = try parse(testing.allocator, out.items, .{}, null);
     defer doc2.deinit();
@@ -1311,8 +1317,8 @@ test "large graphs use the hashed collision path" {
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(testing.allocator);
     try doc.lock.writeNix(testing.allocator, &out);
-    try testing.expect(std.mem.indexOf(u8, out.items, "\"s_100\": {") != null);
-    try testing.expect(std.mem.indexOf(u8, out.items, "\"s_101\"") == null);
+    try testing.expect(std.mem.find(u8, out.items, "\"s_100\": {") != null);
+    try testing.expect(std.mem.find(u8, out.items, "\"s_101\"") == null);
 }
 
 test "rejects malformed and adversarial inputs" {
@@ -1356,7 +1362,7 @@ test "unicode escapes and string escaping on output" {
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(testing.allocator);
     try doc.lock.writeNix(testing.allocator, &out);
-    try testing.expect(std.mem.indexOf(u8, out.items, "\"é😀 \\\"q\\\" \\t é\"") != null);
+    try testing.expect(std.mem.find(u8, out.items, "\"é😀 \\\"q\\\" \\t é\"") != null);
 }
 
 test "vector scanners agree with scalar definitions" {

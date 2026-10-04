@@ -40,7 +40,7 @@ const lanes = 32;
 const V = @Vector(lanes, u8);
 const Mask = @Int(.unsigned, lanes);
 
-pub fn indexOfNewline(s: []const u8, start: usize) ?usize {
+pub fn findNewline(s: []const u8, start: usize) ?usize {
     var i = start;
     const nl: V = @splat('\n');
     while (i + lanes <= s.len) : (i += lanes) {
@@ -65,11 +65,11 @@ pub fn parse(text: []const u8) Error!NarInfo {
     var have_size = false;
     var pos: usize = 0;
     while (pos < text.len) {
-        const end = indexOfNewline(text, pos) orelse text.len;
+        const end = findNewline(text, pos) orelse text.len;
         const line = text[pos..end];
         pos = end + 1;
         if (line.len == 0) continue;
-        const colon = std.mem.indexOfScalar(u8, line, ':') orelse return error.InvalidLine;
+        const colon = std.mem.findScalar(u8, line, ':') orelse return error.InvalidLine;
         const key = line[0..colon];
         // Nix skips exactly ": "; tolerate a bare ":" before end of line.
         const value = if (colon + 2 <= line.len) line[colon + 2 ..] else "";
@@ -150,8 +150,8 @@ test "vector newline search matches scalar" {
     var buf: [100]u8 = @splat('x');
     for (0..buf.len) |i| {
         buf[i] = '\n';
-        for (0..i + 1) |start| try std.testing.expectEqual(@as(?usize, i), indexOfNewline(&buf, start));
+        for (0..i + 1) |start| try std.testing.expectEqual(@as(?usize, i), findNewline(&buf, start));
         buf[i] = 'x';
     }
-    try std.testing.expectEqual(@as(?usize, null), indexOfNewline(&buf, 0));
+    try std.testing.expectEqual(@as(?usize, null), findNewline(&buf, 0));
 }

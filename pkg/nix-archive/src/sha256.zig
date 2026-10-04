@@ -10,9 +10,9 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-pub const accelerated = builtin.cpu.arch == .x86_64 and
+pub const accelerated = builtin.target.cpu.arch == .x86_64 and
     builtin.zig_backend != .stage2_c and
-    builtin.cpu.hasAll(.x86, &.{ .sha, .avx2 });
+    builtin.target.cpu.hasAll(.x86, &.{ .sha, .avx2 });
 
 pub const Sha256 = if (accelerated) Fast else std.crypto.hash.sha2.Sha256;
 

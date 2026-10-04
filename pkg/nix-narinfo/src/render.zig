@@ -50,7 +50,7 @@ pub const Signer = struct {
     /// Parses a Nix secret key: `<name>:<base64 of 64-byte secret key>`.
     pub fn parse(allocator: std.mem.Allocator, text: []const u8) Error!*Signer {
         const trimmed = std.mem.trim(u8, text, " \t\r\n");
-        const colon = std.mem.indexOfScalar(u8, trimmed, ':') orelse return error.InvalidKey;
+        const colon = std.mem.findScalar(u8, trimmed, ':') orelse return error.InvalidKey;
         const name = trimmed[0..colon];
         if (name.len == 0) return error.InvalidKey;
         for (name) |c| if (c == '\n' or c == ' ') return error.InvalidKey;
@@ -200,8 +200,8 @@ pub fn render(allocator: std.mem.Allocator, in: Input, signer: ?*const Signer) E
         }
     }.line;
     var num_buf: [2][20]u8 = undefined;
-    const nar_size = std.fmt.bufPrint(&num_buf[0], "{d}", .{in.nar_size}) catch unreachable;
-    const file_size = std.fmt.bufPrint(&num_buf[1], "{d}", .{in.file_size}) catch unreachable;
+    const nar_size = std.mem.print(&num_buf[0], "{d}", .{in.nar_size}) catch unreachable;
+    const file_size = std.mem.print(&num_buf[1], "{d}", .{in.file_size}) catch unreachable;
 
     try w(&out, allocator, &.{ "StorePath: ", in.store_path });
     try w(&out, allocator, &.{ "URL: nar/", &file_hash, ext });
@@ -265,8 +265,8 @@ test "renders and signs a narinfo" {
         .system = "x86_64-linux",
     }, signer);
     defer a.free(text);
-    try std.testing.expect(std.mem.indexOf(u8, text, "References: 0mdqa9w1p6cmli6976v4wi0sw9r4p5pr-hello 1mdqa9w1p6cmli6976v4wi0sw9r4p5pr-b\n") != null);
-    try std.testing.expect(std.mem.indexOf(u8, text, "\nSig: test-1:") != null);
+    try std.testing.expect(std.mem.find(u8, text, "References: 0mdqa9w1p6cmli6976v4wi0sw9r4p5pr-hello 1mdqa9w1p6cmli6976v4wi0sw9r4p5pr-b\n") != null);
+    try std.testing.expect(std.mem.find(u8, text, "\nSig: test-1:") != null);
     const empty = try render(a, .{
         .store_path = "/nix/store/0mdqa9w1p6cmli6976v4wi0sw9r4p5pr-hello",
         .nar_hash = &nar,
@@ -279,7 +279,7 @@ test "renders and signs a narinfo" {
         .system = "",
     }, null);
     defer a.free(empty);
-    try std.testing.expect(std.mem.indexOf(u8, empty, "\nReferences: \nDeriver: ") != null);
+    try std.testing.expect(std.mem.find(u8, empty, "\nReferences: \nDeriver: ") != null);
     try std.testing.expectError(error.InvalidSystem, render(a, .{
         .store_path = "/nix/store/0mdqa9w1p6cmli6976v4wi0sw9r4p5pr-hello",
         .nar_hash = &nar,

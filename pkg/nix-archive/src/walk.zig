@@ -7,7 +7,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const Sink = @import("sink.zig").Sink;
 
-pub const supported = builtin.os.tag == .linux;
+pub const supported = builtin.target.os.tag == .linux;
 
 pub const Error = error{
     Io,
@@ -156,7 +156,7 @@ const Writer = struct {
             if (n == 0) break;
             var off: usize = 0;
             while (off < n) {
-                const reclen = std.mem.readInt(u16, buf[off + 16 ..][0..2], builtin.cpu.arch.endian());
+                const reclen = std.mem.readInt(u16, buf[off + 16 ..][0..2], builtin.target.cpu.arch.endian());
                 const dtype = buf[off + 18];
                 const entry_name = std.mem.sliceTo(@as([*:0]const u8, @ptrCast(&buf[off + 19])), 0);
                 off += reclen;

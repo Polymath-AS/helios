@@ -100,7 +100,7 @@ pub fn main() !void {
             if (out.items.len > 1 << 20) flush(&out);
             continue;
         }
-        const name = std.fs.path.basename(path);
+        const name = std.Io.Dir.path.basename(path);
         const iters = iterations(bytes.len);
         var doc = try fl.parse(gpa, bytes, .{}, null);
         defer doc.deinit();
