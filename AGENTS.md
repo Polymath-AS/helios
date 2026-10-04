@@ -48,6 +48,9 @@ Logging is `tracing` with `tracing-subscriber` (fmt, ansi and json only; no
 
 - Measure before and after; `bench/run.sh` and `bench/flake-lock.sh`
   compare against the reference implementations on the same corpus.
+  `bench/poop.sh` compares whole processes with poop (wall time, peak RSS,
+  cycles, cache and branch misses), including `helios push` against
+  `nix copy`. Benchmark output stays out of the tree.
 - Keep the narinfo read path free of SQLite on misses and of per-request
   signing.
 - Keep a scalar reference for every SIMD routine, with a test asserting the

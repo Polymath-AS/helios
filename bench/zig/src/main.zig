@@ -226,6 +226,8 @@ pub fn main() !void {
         .signer = try narinfo.Signer.parse(gpa, key),
     };
 
+    // One untimed pass, for whole-process tools (bench/poop.sh).
+    if (std.mem.eql(u8, only, "nar-once")) return narHash(&ctx);
     if (std.mem.eql(u8, only, "nar")) {
         var bytes: u64 = 0;
         for (ctx.paths) |p| {

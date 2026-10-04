@@ -10,3 +10,8 @@ result-*
 # Zig
 .zig-cache/
 zig-out/
+
+# Benchmark output (bench/*.sh, perf, poop): keep results out of the tree
+/bench/**/*.txt
+*.tsv
+perf.data*
