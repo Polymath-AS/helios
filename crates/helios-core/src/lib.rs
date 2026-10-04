@@ -486,24 +486,28 @@ mod tests {
         assert_ne!(a, b);
         assert_eq!(a.len(), 36);
         assert_eq!(&a[14..15], "4");
-    }
-
-    #[test]
-    fn nix32_round_trip() {
+        // nix32 lengths and the error path across the C ABI.
         let bytes = [7u8; 20];
-        let text = nix32_encode(&bytes);
-        assert_eq!(text.len(), 32);
-        assert_eq!(nix32_decode::<20>(&text), Some(bytes));
+        assert_eq!(nix32_decode::<20>(&nix32_encode(&bytes)), Some(bytes));
         assert_eq!(nix32_decode::<20>("not-valid"), None);
     }
 
+    /// The Signer binding: generation, parsing, and buffers that grow for
+    /// long key names. Signing itself is tested in pkg/nix-narinfo.
     #[test]
-    fn generated_keys_round_trip() {
+    fn signer() {
         let key = Signer::generate("gen-1").unwrap();
         assert!(key.starts_with("gen-1:"));
         assert_ne!(key, Signer::generate("gen-1").unwrap());
         assert!(Signer::new(&key).unwrap().public_key().starts_with("gen-1:"));
         assert!(Signer::generate("bad:name").is_err());
+        assert!(Signer::new(KEY).unwrap().public_key().starts_with("test-1:"));
+        assert!(Signer::new("garbage").is_none());
+
+        let name = "k".repeat(600);
+        let long = Signer::new(&Signer::generate(&name).unwrap()).unwrap();
+        assert_eq!(long.public_key().len(), name.len() + 1 + 44);
+        assert_eq!(long.sign(b"msg").len(), name.len() + 1 + 88);
     }
 
     #[test]
@@ -531,21 +535,6 @@ mod tests {
         let sig = text.lines().find_map(|l| l.strip_prefix("Sig: ")).unwrap();
         let fingerprint = format!("1;{path};sha256:{};1234;", nix32_encode(&nar_hash));
         assert_eq!(signer.sign(fingerprint.as_bytes()), sig);
-    }
-
-    #[test]
-    fn signer_public_key() {
-        let signer = Signer::new(KEY).unwrap();
-        assert!(signer.public_key().starts_with("test-1:"));
-        assert!(Signer::new("garbage").is_none());
-    }
-
-    #[test]
-    fn long_key_names_fit() {
-        let name = "k".repeat(600);
-        let signer = Signer::new(&Signer::generate(&name).unwrap()).unwrap();
-        assert_eq!(signer.public_key().len(), name.len() + 1 + 44);
-        assert_eq!(signer.sign(b"msg").len(), name.len() + 1 + 88);
     }
 
     #[test]

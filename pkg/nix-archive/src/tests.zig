@@ -79,19 +79,17 @@ test "long-distance matching with an exact pledged size round-trips" {
     try roundTripWith(.{ .level = 3 }, 1000, true);
 }
 
-test "a pledged size the stream does not match fails" {
+test "invalid options and mismatched pledges are refused" {
     const a = std.testing.allocator;
+    var none: Collect = .{};
+    try std.testing.expectError(error.Zstd, Sink.init(a, .{ .window_log = 28 }, Collect.write, &none));
+
     var out: Collect = .{};
     defer out.list.deinit(a);
     var sink = try Sink.init(a, .{ .nar_size = 10 }, Collect.write, &out);
     defer sink.deinit(a);
     try sink.write("only five");
     try std.testing.expectError(error.Zstd, sink.finish());
-}
-
-test "an out-of-range window is refused" {
-    var out: Collect = .{};
-    try std.testing.expectError(error.Zstd, Sink.init(std.testing.allocator, .{ .window_log = 28 }, Collect.write, &out));
 }
 
 test "verifier rejects truncated and non-NAR input" {
@@ -114,4 +112,24 @@ test "verifier rejects truncated and non-NAR input" {
     defer raw.deinit(a);
     try raw.update("definitely not a nar archive....");
     try std.testing.expectError(error.NotNar, raw.finish());
+}
+
+test "hash = false writes the same stream and sizes without hashing" {
+    const a = std.testing.allocator;
+    const nar = try fakeNar(a, 100_000);
+    defer a.free(nar);
+    var outs: [2]Collect = .{ .{}, .{} };
+    defer for (&outs) |*o| o.list.deinit(a);
+    var digests: [2]@import("sink.zig").Digest = undefined;
+    for ([_]bool{ true, false }, &outs, &digests) |hash, *out, *digest| {
+        var sink = try Sink.init(a, .{ .level = 3, .hash = hash }, Collect.write, out);
+        defer sink.deinit(a);
+        try sink.write(nar);
+        digest.* = try sink.finish();
+    }
+    try std.testing.expectEqualSlices(u8, outs[0].list.items, outs[1].list.items);
+    try std.testing.expectEqual(digests[0].nar_size, digests[1].nar_size);
+    try std.testing.expectEqual(digests[0].file_size, digests[1].file_size);
+    try std.testing.expectEqualSlices(u8, &@as([32]u8, @splat(0)), &digests[1].nar_hash);
+    try std.testing.expectEqualSlices(u8, &@as([32]u8, @splat(0)), &digests[1].file_hash);
 }

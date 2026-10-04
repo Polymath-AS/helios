@@ -260,16 +260,12 @@ mod tests {
     use std::time::Duration;
 
     #[test]
-    fn durations() {
+    fn durations_and_sizes() {
         assert_eq!(parse_duration("30s"), Ok(Duration::from_secs(30)));
         assert_eq!(parse_duration("7d"), Ok(Duration::from_secs(7 * 86400)));
         assert_eq!(parse_duration("0"), Ok(Duration::ZERO));
         assert!(parse_duration("5").is_err());
         assert!(parse_duration("5w").is_err());
-    }
-
-    #[test]
-    fn sizes() {
         assert_eq!(parse_size("0"), Ok(0));
         assert_eq!(parse_size("1024"), Ok(1024));
         assert_eq!(parse_size("64M"), Ok(64 << 20));

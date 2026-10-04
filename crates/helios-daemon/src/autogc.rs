@@ -175,10 +175,6 @@ mod tests {
         let p = Policy { quota: 0, high: 0.9, low: 0.8, min_free: 10 * GIB };
         assert_eq!(to_free(&p, 1, 20 * GIB), Need { quota: 0, disk: 0 });
         assert_eq!(to_free(&p, 1, 5 * GIB), Need { quota: 0, disk: 6 * GIB });
-    }
-
-    #[test]
-    fn free_space_floor_spares_the_cache() {
         let need = Need { quota: 0, disk: 6 * GIB };
         // Evicting all of it would not be enough: something else fills the disk.
         assert_eq!(budget(need, 5 * GIB), 0);

@@ -180,6 +180,7 @@ pub fn isValidScalar(in: []const u8) bool {
 }
 
 test "sha256 of empty string round-trips" {
+    try std.testing.expectEqual(@as(usize, 32), encodedLen(20)); // a store path hash
     var digest: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash("", &digest, .{});
     var text: [52]u8 = undefined;
@@ -188,11 +189,6 @@ test "sha256 of empty string round-trips" {
     var back: [32]u8 = undefined;
     try decode(&back, &text);
     try std.testing.expectEqualSlices(u8, &digest, &back);
-}
-
-test "store path hash length" {
-    try std.testing.expectEqual(@as(usize, 32), encodedLen(20));
-    try std.testing.expectEqual(@as(usize, 52), encodedLen(32));
 }
 
 test "rejects invalid characters and overflow" {

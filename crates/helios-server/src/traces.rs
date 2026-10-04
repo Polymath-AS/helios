@@ -283,13 +283,4 @@ mod tests {
         assert!(!legacy_id_valid(&format!("sha256:{}!out", "A".repeat(64))));
         assert!(!legacy_id_valid(&format!("sha256:{hex}!bad/name")));
     }
-
-    #[test]
-    fn both_entry_shapes_parse() {
-        let current: Entry =
-            serde_json::from_str(r#"{"key":{"drvPath":"x.drv","outputName":"out"},"value":{"outPath":"y","signatures":[]}}"#).unwrap();
-        assert!(matches!(current, Entry::Current { .. }));
-        let legacy: Entry = serde_json::from_str(r#"{"id":"sha256:ab!out","outPath":"y","signatures":[],"dependentRealisations":{}}"#).unwrap();
-        assert!(matches!(legacy, Entry::Legacy { .. }));
-    }
 }

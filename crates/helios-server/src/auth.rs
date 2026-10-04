@@ -187,7 +187,9 @@ mod tests {
     }
 
     #[test]
-    fn round_trip_and_tamper() {
+    fn tokens() {
+        // The pre-encoded header must stay what it claims to be.
+        assert_eq!(URL_SAFE_NO_PAD.encode(br#"{"alg":"HS256","typ":"JWT"}"#), HEADER_B64);
         let now = 1_700_000_000;
         let token = sign(&claims(now), b"0123456789abcdef");
         assert!(verify(&token, b"0123456789abcdef", now).is_some());
@@ -196,15 +198,7 @@ mod tests {
         let mut tampered = token.clone();
         tampered.insert(token.find('.').unwrap() + 3, 'x');
         assert!(verify(&tampered, b"0123456789abcdef", now).is_none());
-    }
 
-    #[test]
-    fn header_constant_matches() {
-        assert_eq!(URL_SAFE_NO_PAD.encode(br#"{"alg":"HS256","typ":"JWT"}"#), HEADER_B64);
-    }
-
-    #[test]
-    fn scope_checks() {
         let c = claims(0);
         assert!(c.allows("main", Perm::Push));
         assert!(!c.allows("main", Perm::Pull));
