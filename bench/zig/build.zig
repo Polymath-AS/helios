@@ -15,6 +15,9 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/main.zig"),
         .target = target,
         .optimize = optimize,
+        // Zig 0.17 keeps frame pointers in ReleaseFast, which 0.16 dropped;
+        // they cost up to 10% in the hot paths here.
+        .omit_frame_pointer = if (optimize == .fast) true else null,
         .link_libc = true,
     });
     inline for (packages) |p| mod.addImport(p[0], b.dependency(p[1], .{ .target = target, .optimize = optimize }).module(p[0]));
@@ -25,6 +28,9 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("src/flake_lock.zig"),
         .target = target,
         .optimize = optimize,
+        // Zig 0.17 keeps frame pointers in ReleaseFast, which 0.16 dropped;
+        // they cost up to 10% in the hot paths here.
+        .omit_frame_pointer = if (optimize == .fast) true else null,
         .link_libc = true,
     });
     fl_mod.addImport("nix-flake-lock", b.dependency("nix_flake_lock", .{ .target = target, .optimize = optimize }).module("nix-flake-lock"));

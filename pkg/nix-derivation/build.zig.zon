@@ -2,7 +2,7 @@
     .name = .nix_derivation,
     .version = "0.1.0",
     .fingerprint = 0x7a251e78739a22ca,
-    .minimum_zig_version = "0.16.0",
+    .minimum_zig_version = "0.17.0",
     .dependencies = .{
     },
     .paths = .{ "build.zig", "build.zig.zon", "src" },

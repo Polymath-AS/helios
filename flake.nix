@@ -28,7 +28,7 @@
         };
         cargoLock.lockFile = ./Cargo.lock;
 
-        nativeBuildInputs = [ pkgs.zig pkgs.pkg-config ];
+        nativeBuildInputs = [ pkgs.zig_0_17 pkgs.pkg-config ];
         buildInputs = [ pkgs.zstd pkgs.sqlite ];
 
         # Nix builds must not depend on the build machine's CPU. `baseline`
@@ -68,7 +68,7 @@
       devShells = forAllSystems (pkgs: {
         default = pkgs.mkShell {
           packages = [
-            pkgs.zig
+            pkgs.zig_0_17
             pkgs.cargo
             pkgs.rustc
             pkgs.clippy

@@ -35,7 +35,7 @@ fn readFile(path: [:0]const u8) ![]u8 {
 }
 
 fn records(dir: []const u8, name: []const u8) ![]const []const u8 {
-    const path = try std.fmt.allocPrintSentinel(gpa, "{s}/{s}", .{ dir, name }, 0);
+    const path = try gpa.printSentinel("{s}/{s}", .{ dir, name }, 0);
     const data = try readFile(path);
     var out: std.ArrayList([]const u8) = .empty;
     var it = std.mem.splitScalar(u8, data, 0);
@@ -184,7 +184,7 @@ fn narHash(c: *const Ctx) !void {
     for (c.paths) |p| {
         var sink = try archive.Sink.init(gpa, .{ .level = 0 }, discard, null);
         defer sink.deinit(gpa);
-        const z = try gpa.dupeZ(u8, p);
+        const z = try gpa.dupeSentinel(u8, p, 0);
         defer gpa.free(z);
         try archive.dump(&sink, z);
         std.mem.doNotOptimizeAway(try sink.finish());
@@ -208,9 +208,9 @@ pub fn main() !void {
         hashes32[i] = p.store_path[store_path.store_dir.len..][0..32];
         hashes52[i] = p.nar_hash["sha256:".len..];
         try base32.decode(&raw20[i], hashes32[i]);
-        fingerprints[i] = try std.fmt.allocPrint(gpa, "1;{s};{s};{d};{s}", .{ p.store_path, p.nar_hash, p.nar_size, p.references });
+        fingerprints[i] = try gpa.print("1;{s};{s};{d};{s}", .{ p.store_path, p.nar_hash, p.nar_size, p.references });
     }
-    const key = try readFile(try std.fmt.allocPrintSentinel(gpa, "{s}/key", .{dir}, 0));
+    const key = try readFile(try gpa.printSentinel("{s}/key", .{dir}, 0));
     const ctx: Ctx = .{
         .narinfos = narinfos,
         .parsed = parsed,
@@ -228,7 +228,7 @@ pub fn main() !void {
         for (ctx.paths) |p| {
             var sink = try archive.Sink.init(gpa, .{ .level = 0 }, discard, null);
             defer sink.deinit(gpa);
-            try archive.dump(&sink, try gpa.dupeZ(u8, p));
+            try archive.dump(&sink, try gpa.dupeSentinel(u8, p, 0));
             bytes += (try sink.finish()).nar_size;
         }
         const t0 = now();

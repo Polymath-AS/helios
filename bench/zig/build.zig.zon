@@ -2,7 +2,7 @@
     .name = .helios_bench,
     .version = "0.1.0",
     .fingerprint = 0xc67ae359dd92ff1e,
-    .minimum_zig_version = "0.16.0",
+    .minimum_zig_version = "0.17.0",
     .dependencies = .{
         .nix_base32 = .{ .path = "../../pkg/nix-base32" },
         .nix_store_path = .{ .path = "../../pkg/nix-store-path" },

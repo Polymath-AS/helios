@@ -1,5 +1,5 @@
 //! Single-threaded bump allocator. std.heap.ArenaAllocator is lock-free and
-//! thread-safe in Zig 0.16, which puts atomics on every allocation; parsing
+//! thread-safe since Zig 0.16, which puts atomics on every allocation; parsing
 //! allocates from one thread only, so plain pointer bumping is enough.
 //! Chunks are chained through a header at their start, so a document that
 //! fits in its first chunk costs exactly one malloc.

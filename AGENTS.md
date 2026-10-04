@@ -24,8 +24,8 @@ coarse, such as a whole NAR or narinfo per call.
 
 ## Tooling
 
-- Use `nix develop` for zig 0.16, cargo, zstd and pkg-config.
-- Zig 0.16 APIs changed a lot; check `zig env` for the std source rather
+- Use `nix develop` for zig 0.17, cargo, zstd and pkg-config.
+- Zig 0.17 APIs changed a lot; check `zig env` for the std source rather
   than relying on older examples.
 - System libraries: zstd and sqlite (pkg-config).
 - `HELIOS_ZIG_CPU` sets libhelios's `-Dcpu` (default `native`; the Nix

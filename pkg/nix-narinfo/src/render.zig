@@ -251,8 +251,8 @@ test "renders and signs a narinfo" {
     // Secret key from `nix key generate-secret --key-name test-1`.
     const signer = try Signer.parse(a, "test-1:suJsWimvBNFUIc0JJE18OfOMygH/f2GuTC2/XwD6rPKkV+1VKilMIkXl6Ax9hqeKpUF/BSOH+Fqng4tqZlirhw==");
     defer signer.destroy(a);
-    const nar = [_]u8{1} ** 32;
-    const file = [_]u8{2} ** 32;
+    const nar: [32]u8 = @splat(1);
+    const file: [32]u8 = @splat(2);
     const text = try render(a, .{
         .store_path = "/nix/store/0mdqa9w1p6cmli6976v4wi0sw9r4p5pr-hello",
         .nar_hash = &nar,
@@ -311,12 +311,12 @@ test "generated keys parse and sign" {
     const a = std.testing.allocator;
     var text: std.ArrayList(u8) = .empty;
     defer text.deinit(a);
-    try Signer.generate(&text, a, "gen-1", [_]u8{42} ** 32);
+    try Signer.generate(&text, a, "gen-1", @as([32]u8, @splat(42)));
     const signer = try Signer.parse(a, text.items);
     defer signer.destroy(a);
     const theirs = (try signer.key_pair.sign("msg", null)).toBytes();
     try std.testing.expectEqualSlices(u8, &theirs, &(try signer.signRaw("msg")));
-    try std.testing.expectError(error.InvalidKey, Signer.generate(&text, a, "bad:name", [_]u8{1} ** 32));
+    try std.testing.expectError(error.InvalidKey, Signer.generate(&text, a, "bad:name", @as([32]u8, @splat(1))));
 }
 
 test "rejects a secret key whose public half does not match its seed" {
@@ -326,7 +326,7 @@ test "rejects a secret key whose public half does not match its seed" {
     var raw: [64]u8 = undefined;
     try std.base64.standard.Decoder.decode(&raw, good[prefix.len..]);
     // A valid point, but the public key of another seed.
-    raw[32..64].* = (try Ed25519.KeyPair.generateDeterministic([_]u8{7} ** 32)).public_key.toBytes();
+    raw[32..64].* = (try Ed25519.KeyPair.generateDeterministic(@as([32]u8, @splat(7)))).public_key.toBytes();
     var text: [good.len]u8 = undefined;
     @memcpy(text[0..prefix.len], prefix);
     _ = std.base64.standard.Encoder.encode(text[prefix.len..], &raw);
@@ -337,8 +337,8 @@ test "duplicate references are rendered and signed once" {
     const a = std.testing.allocator;
     const signer = try Signer.parse(a, "test-1:suJsWimvBNFUIc0JJE18OfOMygH/f2GuTC2/XwD6rPKkV+1VKilMIkXl6Ax9hqeKpUF/BSOH+Fqng4tqZlirhw==");
     defer signer.destroy(a);
-    const nar = [_]u8{1} ** 32;
-    const file = [_]u8{2} ** 32;
+    const nar: [32]u8 = @splat(1);
+    const file: [32]u8 = @splat(2);
     var in: Input = .{
         .store_path = "/nix/store/0mdqa9w1p6cmli6976v4wi0sw9r4p5pr-hello",
         .nar_hash = &nar,

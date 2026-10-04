@@ -13,7 +13,7 @@ pub const max_name_len = 211;
 
 const lanes = 32;
 const V = @Vector(lanes, u8);
-const Mask = std.meta.Int(.unsigned, lanes);
+const Mask = @Int(.unsigned, lanes);
 
 fn splat(c: u8) V {
     return @splat(c);
@@ -88,7 +88,7 @@ test "validates base names" {
 test "vector name check agrees with scalar for every byte in every lane" {
     for (0..256) |c| {
         for (0..lanes + 3) |pos| {
-            var name = [_]u8{'a'} ** (lanes + 3);
+            var name: [lanes + 3]u8 = @splat('a');
             name[pos] = @intCast(c);
             try std.testing.expectEqual(isValidNameScalar(&name), isValidName(&name));
         }

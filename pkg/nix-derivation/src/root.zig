@@ -39,7 +39,7 @@ pub const Derivation = struct {
 
 const lanes = 32;
 const V = @Vector(lanes, u8);
-const Mask = std.meta.Int(.unsigned, lanes);
+const Mask = @Int(.unsigned, lanes);
 
 /// Index of the first '"' or '\\' at or after `start`.
 pub fn indexOfQuoteOrEscape(s: []const u8, start: usize) ?usize {
@@ -197,7 +197,7 @@ test "parses a derivation with escapes" {
 }
 
 test "vector quote search matches scalar" {
-    var buf = [_]u8{'x'} ** 100;
+    var buf: [100]u8 = @splat('x');
     for (0..buf.len) |i| {
         for ([_]u8{ '"', '\\' }) |c| {
             buf[i] = c;

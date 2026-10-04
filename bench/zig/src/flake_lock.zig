@@ -14,7 +14,7 @@ fn now() u64 {
 }
 
 fn readFile(path: []const u8) ![]u8 {
-    const z = try gpa.dupeZ(u8, path);
+    const z = try gpa.dupeSentinel(u8, path, 0);
     defer gpa.free(z);
     const fd: i32 = @intCast(@as(isize, @bitCast(linux.openat(linux.AT.FDCWD, z, .{ .ACCMODE = .RDONLY }, 0))));
     if (fd < 0) return error.Open;

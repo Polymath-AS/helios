@@ -24,7 +24,7 @@ const linux = std.os.linux;
 fn check(rc: usize) Error!usize {
     const e = linux.errno(rc);
     if (e == .SUCCESS) return rc;
-    last_errno = @intFromEnum(e);
+    last_errno = @backingInt(e);
     return error.Io;
 }
 
@@ -73,7 +73,7 @@ const Writer = struct {
     }
 
     fn pad(self: *Writer, n: u64) Error!void {
-        const zeros = [_]u8{0} ** 8;
+        const zeros: [8]u8 = @splat(0);
         const rem: usize = @intCast(n % 8);
         if (rem != 0) try self.sink.write(zeros[0 .. 8 - rem]);
     }
@@ -152,7 +152,7 @@ const Writer = struct {
         var entries: std.ArrayList(Entry) = .empty;
         const buf = self.dents;
         while (true) {
-            const n = try check(linux.getdents64(fd, buf.ptr, buf.len));
+            const n = try check(linux.getdents64(fd, buf.ptr, @intCast(buf.len)));
             if (n == 0) break;
             var off: usize = 0;
             while (off < n) {
@@ -161,7 +161,7 @@ const Writer = struct {
                 const entry_name = std.mem.sliceTo(@as([*:0]const u8, @ptrCast(&buf[off + 19])), 0);
                 off += reclen;
                 if (std.mem.eql(u8, entry_name, ".") or std.mem.eql(u8, entry_name, "..")) continue;
-                try entries.append(self.arena, .{ .name = try self.arena.dupeZ(u8, entry_name), .dtype = dtype });
+                try entries.append(self.arena, .{ .name = try self.arena.dupeSentinel(u8, entry_name, 0), .dtype = dtype });
             }
         }
 

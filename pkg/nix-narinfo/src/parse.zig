@@ -38,7 +38,7 @@ pub const NarInfo = struct {
 
 const lanes = 32;
 const V = @Vector(lanes, u8);
-const Mask = std.meta.Int(.unsigned, lanes);
+const Mask = @Int(.unsigned, lanes);
 
 pub fn indexOfNewline(s: []const u8, start: usize) ?usize {
     var i = start;
@@ -147,7 +147,7 @@ test "parses a narinfo" {
 }
 
 test "vector newline search matches scalar" {
-    var buf = [_]u8{'x'} ** 100;
+    var buf: [100]u8 = @splat('x');
     for (0..buf.len) |i| {
         buf[i] = '\n';
         for (0..i + 1) |start| try std.testing.expectEqual(@as(?usize, i), indexOfNewline(&buf, start));

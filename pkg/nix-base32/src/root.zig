@@ -12,7 +12,7 @@ pub const alphabet = "0123456789abcdfghijklmnpqrsvwxyz";
 const invalid: u8 = 0xff;
 
 const reverse: [256]u8 = blk: {
-    var table = [_]u8{invalid} ** 256;
+    var table: [256]u8 = @splat(invalid);
     for (alphabet, 0..) |c, i| table[c] = @intCast(i);
     break :blk table;
 };
@@ -21,7 +21,7 @@ const reverse: [256]u8 = blk: {
 /// one AVX2 register (two SSE registers, one half of an AVX-512 one).
 pub const lanes = 32;
 const V = @Vector(lanes, u8);
-const Mask = std.meta.Int(.unsigned, lanes);
+const Mask = @Int(.unsigned, lanes);
 
 fn splat(c: u8) V {
     return @splat(c);
@@ -190,16 +190,16 @@ test "store path hash length" {
 
 test "rejects invalid characters and overflow" {
     var out: [20]u8 = undefined;
-    try std.testing.expectError(error.InvalidNix32, decode(&out, "e" ** 32));
+    try std.testing.expectError(error.InvalidNix32, decode(&out, &@as([32]u8, @splat('e'))));
     // 52 chars carry 260 bits; the top 4 must be zero for a 32-byte digest.
     var digest: [32]u8 = undefined;
-    try std.testing.expectError(error.InvalidNix32, decode(&digest, "z" ** 52));
+    try std.testing.expectError(error.InvalidNix32, decode(&digest, &@as([52]u8, @splat('z'))));
 }
 
 test "vector classifier agrees with the table for every byte in every lane" {
     for (0..256) |c| {
         for (0..lanes) |lane| {
-            var in = [_]u8{'0'} ** lanes;
+            var in: [lanes]u8 = @splat('0');
             in[lane] = @intCast(c);
             try std.testing.expectEqual(isValidScalar(&in), isValid(&in));
             var d: V = undefined;

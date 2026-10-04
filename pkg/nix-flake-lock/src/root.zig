@@ -118,8 +118,9 @@ pub const LockFile = struct {
         // Only `follows` edges can fail, and every parsed node is reachable,
         // so a graph without non-empty follows edges is valid as is.
         if (!self.hasFollows()) return;
-        var fallback = std.heap.stackFallback(4096, gpa);
-        var bump = try Bump.init(fallback.get(), 2 * 1024);
+        var first: [4096]u8 = undefined;
+        var fallback: std.heap.BufferFirstAllocator = .init(&first, gpa);
+        var bump = try Bump.init(fallback.allocator(), 2 * 1024);
         defer bump.deinit();
         var r: Resolver = .init(bump.allocator(), self);
         const visited = try bump.alloc(bool, self.nodes.len);
@@ -173,7 +174,7 @@ fn findSorted(comptime T: type, items: []const T, name: []const u8) ?usize {
 
 const lanes = 32;
 const V = @Vector(lanes, u8);
-const Mask = std.meta.Int(.unsigned, lanes);
+const Mask = @Int(.unsigned, lanes);
 
 inline fn splat(c: u8) V {
     return @splat(c);
@@ -1136,7 +1137,7 @@ const Writer = struct {
                 const gop = try suffix.getOrPut(tmp, in.name);
                 if (!gop.found_existing) gop.value_ptr.* = 2;
                 while (true) {
-                    const candidate = try std.fmt.allocPrint(tmp, "{s}_{d}", .{ in.name, gop.value_ptr.* });
+                    const candidate = try tmp.print("{s}_{d}", .{ in.name, gop.value_ptr.* });
                     gop.value_ptr.* += 1;
                     if (!taken(small, assigned.items, &used, candidate)) {
                         name = candidate;
@@ -1153,8 +1154,9 @@ const Writer = struct {
     }
 
     fn write(w: *Writer) Allocator.Error!void {
-        var fallback = std.heap.stackFallback(8192, w.gpa);
-        var bump = try Bump.init(fallback.get(), 4096);
+        var first: [8192]u8 = undefined;
+        var fallback: std.heap.BufferFirstAllocator = .init(&first, w.gpa);
+        var bump = try Bump.init(fallback.allocator(), 4096);
         defer bump.deinit();
         const tmp = bump.allocator();
         const nm = try w.names(tmp);
@@ -1306,7 +1308,7 @@ test "rejects malformed and adversarial inputs" {
         .{ "{\"version\":7,\"root\":\"r\",\"nodes\":{\"r\":{\"inputs\":{\"a\":\"b\"}},\"b\":{\"locked\":{\"x\":null},\"original\":{}}}}", error.UnsupportedInputAttributeType },
     };
     inline for (cases) |c| try testing.expectError(c[1], parse(a, c[0], .{}, null));
-    try testing.expectError(error.NestingTooDeep, parse(a, "{\"x\":" ++ "[" ** 300 ++ "]" ** 300 ++ "}", .{}, null));
+    try testing.expectError(error.NestingTooDeep, parse(a, "{\"x\":" ++ &@as([300]u8, @splat('[')) ++ &@as([300]u8, @splat(']')) ++ "}", .{}, null));
 }
 
 test "follows validation detects cycles and missing targets" {
@@ -1336,7 +1338,7 @@ test "unicode escapes and string escaping on output" {
 }
 
 test "vector scanners agree with scalar definitions" {
-    var buf = [_]u8{'a'} ** 80;
+    var buf: [80]u8 = @splat('a');
     for (0..buf.len) |i| {
         for ([_]u8{ '"', '\\', 0x01, 0x80, 0xff }) |c| {
             buf[i] = c;
@@ -1344,7 +1346,7 @@ test "vector scanners agree with scalar definitions" {
             if (c < 0x80) try testing.expectEqual(i, scanEscape(&buf, 0));
             buf[i] = 'a';
         }
-        var sp = [_]u8{' '} ** 80;
+        var sp: [80]u8 = @splat(' ');
         sp[i] = 'x';
         try testing.expectEqual(i, skipSpace(&sp, 0));
     }
