@@ -34,6 +34,8 @@ fn closeFd(fd: i32) void {
 
 /// Files at least this large are mmapped; sink.write feeds them unbuffered.
 const mmap_threshold = @import("sink.zig").direct_threshold;
+/// Bytes mapped at once; a page multiple, so every window offset is aligned.
+const mmap_window = 16 << 20;
 
 const Kind = enum { regular, executable, symlink, directory };
 
@@ -114,18 +116,24 @@ const Writer = struct {
         // Large files are hashed straight out of the page cache: no
         // kernel-to-user copy, and the sink feeds the mapping without
         // buffering it. Store paths are immutable, so the mapping is stable.
+        // A window at a time, so peak RSS does not grow with the file.
+        var done: u64 = 0;
         if (size >= mmap_threshold) {
-            const map_len: usize = @intCast(size);
-            const rc = linux.mmap(null, map_len, .{ .READ = true }, .{ .TYPE = .PRIVATE, .POPULATE = true }, fd, 0);
-            if (linux.errno(rc) == .SUCCESS) {
+            while (done < size) {
+                const window: usize = @intCast(@min(size - done, mmap_window));
+                const rc = linux.mmap(null, window, .{ .READ = true }, .{ .TYPE = .PRIVATE, .POPULATE = true }, fd, @intCast(done));
+                if (linux.errno(rc) != .SUCCESS) {
+                    // Read the rest instead, from where the mappings stopped.
+                    _ = try check(linux.lseek(fd, @intCast(done), linux.SEEK.SET));
+                    break;
+                }
                 const ptr: [*]u8 = @ptrFromInt(rc);
-                defer _ = linux.munmap(ptr, map_len);
-                _ = linux.madvise(ptr, map_len, linux.MADV.SEQUENTIAL);
-                try self.sink.write(ptr[0..map_len]);
-                return self.pad(size);
+                defer _ = linux.munmap(ptr, window);
+                try self.sink.write(ptr[0..window]);
+                done += window;
             }
         }
-        var remaining = size;
+        var remaining = size - done;
         while (remaining > 0) {
             var dst = self.sink.spare();
             if (dst.len == 0) {

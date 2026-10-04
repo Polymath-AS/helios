@@ -573,6 +573,35 @@ mod tests {
         assert_eq!(aborted.unwrap_err().code, HL_E_ABORTED);
     }
 
+    /// Files are mapped a 16 MiB window at a time; one spanning several
+    /// windows and ending mid-page must still serialise exactly.
+    #[test]
+    fn large_files_serialise_across_mapping_windows() {
+        let dir = TempDir::new();
+        let file = dir.path().join("big");
+        let data: Vec<u8> = (0..(40usize << 20) + 12345).map(|i| (i * 31 % 251) as u8).collect();
+        std::fs::write(&file, &data).unwrap();
+
+        let mut nar = Vec::new();
+        let digest = dump_nar(&file, &DumpOptions { level: 0, ..Default::default() }, |c| {
+            nar.extend_from_slice(c);
+            true
+        })
+        .unwrap();
+
+        let mut expected = Vec::new();
+        let mut str = |s: &[u8]| {
+            expected.extend_from_slice(&(s.len() as u64).to_le_bytes());
+            expected.extend_from_slice(s);
+            expected.resize(expected.len().next_multiple_of(8), 0);
+        };
+        for s in [&b"nix-archive-1"[..], b"(", b"type", b"regular", b"contents", &data, b")"] {
+            str(s);
+        }
+        assert!(nar == expected, "NAR differs from the reference encoding");
+        assert_eq!(digest.nar_hash, sha256(&expected));
+    }
+
     /// Our NAR serialiser must agree byte-for-byte with Nix: compare NAR
     /// hashes against the Nix database for a real closure.
     #[test]
