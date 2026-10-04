@@ -1,0 +1,11 @@
+.{
+    .name = .nix_narinfo,
+    .version = "0.1.0",
+    .fingerprint = 0xf254156c7cc4c9ba,
+    .minimum_zig_version = "0.17.0",
+    .dependencies = .{
+        .nix_base32 = .{ .path = "../nix-base32" },
+        .nix_store_path = .{ .path = "../nix-store-path" },
+    },
+    .paths = .{ "build.zig", "build.zig.zon", "src" },
+}

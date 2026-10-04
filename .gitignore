@@ -1,8 +1,17 @@
-node_modules/
-.pnpm-store/
-.wrangler/
-coverage/
-dist/
-*.log
 .DS_Store
+*.log
 result
+result-*
+
+# Rust
+/target
+/bench/flake-lock-rs/target
+
+# Zig
+.zig-cache/
+zig-out/
+
+# Benchmark output (bench/*.sh, perf, poop): keep results out of the tree
+/bench/**/*.txt
+*.tsv
+perf.data*

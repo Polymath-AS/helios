@@ -1,31 +1,72 @@
 # Helios
 
-This repository is a `pnpm` workspace for Cloudflare-native services.
+A self-hosted Nix binary cache: Rust server and CLI over a Zig core.
 
 ## Workspace Layout
 
-- `workers/*`: deployable Cloudflare Workers
-- `apps/*`: operator or end-user applications that sit beside Workers
-- `packages/*`: shared code used by workers or apps
+- `pkg/*`: Zig packages for Nix formats and the NAR pipeline, one concern
+  each. Each builds and tests on its own (`zig build test`).
+- `core/`: libhelios, the C ABI over `pkg/*`, compiled to a static library
+  by `crates/helios-core/build.rs`. `core/include/helios.h` is the contract.
+- `crates/helios-core`: safe Rust bindings to libhelios.
+- `crates/helios-server`, `crates/helios-cli`, `crates/helios-daemon`: the
+  binaries. `crates/helios-log` sets up their logging. The daemon drives
+  the server over its maintenance socket and never writes the database
+  itself.
+- `nix/`: the NixOS module (`services.helios`), the OCI image, and their VM
+  tests.
+- `bench/`: comparisons against the Haskell Nix libraries, the Rust
+  nix-flake-lock crate and Nix C++. Not part of the Cargo workspace.
 
-Keep deployable runtime code inside `workers/`. Move shared protocol, parsing, and storage helpers into `packages/` only after they are reused.
+Put Nix format logic in a `pkg/*` package and expose it through
+`core/src/root.zig` only when Rust needs it. Keep calls across the C ABI
+coarse, such as a whole NAR or narinfo per call.
 
 ## Tooling
 
-- Use `pnpm`, not `npm`, for dependency management and scripts.
-- Do not commit `package-lock.json` files.
-- If `pnpm` or `wrangler` are missing locally, use `nix shell nixpkgs#nodejs nixpkgs#pnpm nixpkgs#wrangler`.
-- Run workspace commands from the repository root unless a package-specific command is clearer.
+- Use `nix develop` for zig 0.17, cargo, zstd and pkg-config.
+- Zig 0.17 APIs changed a lot; check `zig env` for the std source rather
+  than relying on older examples.
+- System libraries: zstd and sqlite (pkg-config).
+- `HELIOS_ZIG_CPU` sets libhelios's `-Dcpu` (default `native`; the Nix
+  package uses `baseline`).
 
-## Cloudflare Rules
+## Dependencies
 
-- Before changing Workers, R2, D1, Durable Objects, Queues, or platform limits, fetch current Cloudflare docs.
-- Prefer platform-native APIs such as `fetch`, Web Streams, and Web Crypto.
-- Do not enable `nodejs_compat` unless a concrete dependency requires it.
-- After changing a worker's bindings in `wrangler.jsonc`, run that package's `cf-typegen` script.
+Keep the dependency tree small; every crate is build time, audit surface and
+supply-chain risk. Before adding one, check whether libhelios, std or a few
+dozen lines cover it, and disable default features. Deliberately absent:
+reqwest (and `url`/`idna`), aws-lc-rs, parking_lot, uuid,
+hmac/sha2 (libhelios provides SHA-256, HMAC and randomness) and mimalloc
+(measured: no gain here).
+
+Logging is `tracing` with `tracing-subscriber` (fmt, ansi and json only; no
+`env-filter`, whose regex engine `Targets` makes unnecessary) and
+`tracing-journald`, set up once in `crates/helios-log`.
+
+## Performance Rules
+
+- Measure before and after; `bench/run.sh` and `bench/flake-lock.sh`
+  compare against the reference implementations on the same corpus.
+  `bench/poop.sh` compares whole processes with poop (wall time, peak RSS,
+  cycles, cache and branch misses), including `helios push` against
+  `nix copy`. Benchmark output stays out of the tree.
+- Keep the narinfo read path free of SQLite on misses and of per-request
+  signing.
+- Keep a scalar reference for every SIMD routine, with a test asserting the
+  two agree.
 
 ## Verification
 
-- Install dependencies with `pnpm install` from the repo root.
-- Run `pnpm check` before finishing substantial changes.
-- For worker-only iteration, use `pnpm --filter <package> dev`.
+CI (`.github/workflows/ci.yml`) runs all of this on x86_64 and aarch64
+(the VM tests on x86_64 only) and publishes the image on pushes.
+
+- `cargo fmt --check` and `cargo clippy --release --all-targets -- -D warnings`
+- `cargo test --release`
+- `./scripts/test-zig.sh`
+- `nix build .#checks.x86_64-linux.nixos` after changing `nix/`: a VM test of
+  the NixOS module. `.#checks.x86_64-linux.docker` likewise for the OCI
+  image.
+- `./scripts/e2e.sh` before finishing changes to the server, the CLI or wire
+  formats; it substitutes a real closure through Nix with signatures
+  required.

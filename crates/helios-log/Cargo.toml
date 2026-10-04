@@ -1,0 +1,12 @@
+[package]
+name = "helios-log"
+description = "Logging setup shared by the helios binaries"
+version.workspace = true
+edition.workspace = true
+license-file.workspace = true
+publish.workspace = true
+
+[dependencies]
+tracing = { version = "0.1.44", default-features = false, features = ["std"] }
+tracing-journald = "0.3.2"
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["std", "fmt", "ansi", "json"] }
