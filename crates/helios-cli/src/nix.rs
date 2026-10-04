@@ -50,7 +50,8 @@ async fn output(mut cmd: Command, installables: &[String]) -> std::io::Result<st
     use tokio::io::AsyncWriteExt;
     cmd.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
     if installables.len() <= MAX_ARGS {
-        return cmd.arg("--").args(installables).output().await;
+        // Not our stdin: nothing should wait on whatever the caller left open.
+        return cmd.arg("--").args(installables).stdin(std::process::Stdio::null()).output().await;
     }
     let mut child = cmd.arg("--stdin").stdin(std::process::Stdio::piped()).spawn()?;
     let mut stdin = child.stdin.take().expect("stdin is piped");

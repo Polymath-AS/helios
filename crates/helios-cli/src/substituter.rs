@@ -270,6 +270,7 @@ fn effective_netrc_file() -> Option<PathBuf> {
             .args(["--extra-experimental-features", "nix-command"])
             .args(args)
             .stderr(std::process::Stdio::null())
+            .stdin(std::process::Stdio::null())
             .output()
             .ok()?;
         out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
@@ -288,7 +289,11 @@ fn conf_netrc_file(line: &str) -> Option<PathBuf> {
 }
 
 fn nix_trusts_user() -> bool {
-    let Ok(out) = std::process::Command::new("nix").args(["--extra-experimental-features", "nix-command", "store", "info", "--json"]).output() else {
+    let Ok(out) = std::process::Command::new("nix")
+        .args(["--extra-experimental-features", "nix-command", "store", "info", "--json"])
+        .stdin(std::process::Stdio::null())
+        .output()
+    else {
         return true; // No way to tell; do not warn.
     };
     serde_json::from_slice::<serde_json::Value>(&out.stdout).map_or(true, |v| v["trusted"] != false && v["trusted"] != 0)

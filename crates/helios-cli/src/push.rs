@@ -64,6 +64,7 @@ fn produce(path: &str, opts: DumpOptions, tx: mpsc::Sender<Result<Bytes, std::io
     use std::io::Read;
     let mut child = std::process::Command::new("nix-store")
         .args(["--dump", path])
+        .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .spawn()
         .context("running nix-store --dump")?;
