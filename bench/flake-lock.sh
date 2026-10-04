@@ -19,7 +19,7 @@ RS="$ROOT/bench/flake-lock-rs/target/release/flake-lock-rs"
 ZIG="$ROOT/bench/zig/zig-out/bin/flake-lock"
 
 mkdir -p "$W/fixtures" "$W/real" "$W/fuzz"
-UPSTREAM="$(find "${CARGO_HOME:-$HOME/.cargo}/registry/src" -path '*/nix-flake-lock-0.1.0/tests/fixtures' -type d | head -1)"| head -1)"
+UPSTREAM="$(find "${CARGO_HOME:-$HOME/.cargo}/registry/src" -path '*/nix-flake-lock-0.1.0/tests/fixtures' -type d | head -1)"
 cp "$UPSTREAM"/*.lock "$W/fixtures/"
 "$RS" gen "$W/fixtures"
 i=0

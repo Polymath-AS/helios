@@ -28,7 +28,7 @@ export XDG_CONFIG_HOME="$WORK/config"
 H="$ROOT/target/release/helios"
 "$H" login a http://127.0.0.1:18099 "$(cat "$WORK/secret")" >/dev/null
 "$H" cache create main >/dev/null
-"$H" login ci http://127.0.0.1:18099 "$("$H" --server a token create bench --caches main 2>/dev/null | jq -r .token)" >/dev/null
+"$H" login ci http://127.0.0.1:18099 "$("$H" --server a token create bench --caches main --perms push 2>/dev/null | jq -r .token)" >/dev/null
 "$H" push main -r "$TARGET" >/dev/null 2>&1
 nix-store -qR "$TARGET" >"$WORK/paths"
 while read -r p; do printf '%s\0' "$p"; done <"$WORK/paths" >"$C/paths.bin"
